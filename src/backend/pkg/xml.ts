@@ -79,6 +79,29 @@ export interface WebDavItem {
   modified: string
 }
 
+type WebDavResource = Omit<WebDavItem, "name">
+
+function webDavResourceResponse(href: string, item: WebDavResource): string {
+  let xml = `  <d:response>\n`
+  xml += `    <d:href>${href}</d:href>\n`
+  xml += `    <d:propstat>\n`
+  xml += `      <d:prop>\n`
+  if (item.isFolder) {
+    xml += `        <d:resourcetype><d:collection/></d:resourcetype>\n`
+  } else {
+    xml += `        <d:resourcetype/>\n`
+    xml += `        <d:getcontentlength>${item.size}</d:getcontentlength>\n`
+    xml += `        <d:getcontenttype>application/octet-stream</d:getcontenttype>\n`
+  }
+  const modified = item.modified ? new Date(item.modified) : new Date()
+  xml += `        <d:getlastmodified>${modified.toUTCString()}</d:getlastmodified>\n`
+  xml += `      </d:prop>\n`
+  xml += `      <d:status>HTTP/1.1 200 OK</d:status>\n`
+  xml += `    </d:propstat>\n`
+  xml += `  </d:response>\n`
+  return xml
+}
+
 /**
  * 生成 PROPFIND 的 207 Multi-Status 响应体。
  *
@@ -93,50 +116,26 @@ export interface WebDavItem {
  *   §8.3 要求「同一个 Multi-Status 响应内所有 href 格式必须一致」，因此这里
  *   自身与子项统一用相对引用。
  * @param items 直接子项
+ * @param self 被请求资源的属性，省略时按目录处理
  */
 export function generateWebDavXml(
   requestPath: string,
   items: WebDavItem[],
+  self: WebDavResource = { isFolder: true, size: 0, modified: "" },
 ): string {
-  const selfHref = encodeXmlSensitiveChars(asCollectionHref(requestPath))
+  const selfHref = encodeXmlSensitiveChars(
+    self.isFolder
+      ? asCollectionHref(requestPath)
+      : requestPath.replace(/\/+$/, ""),
+  )
 
   let xml = `<?xml version="1.0" encoding="utf-8" ?>\n`
   xml += `<d:multistatus xmlns:d="DAV:">\n`
+  xml += webDavResourceResponse(selfHref, self)
 
-  // 被请求的资源本身：PROPFIND 在本实现中总是列目录，故按集合输出
-  xml += `  <d:response>\n`
-  xml += `    <d:href>${selfHref}</d:href>\n`
-  xml += `    <d:propstat>\n`
-  xml += `      <d:prop>\n`
-  xml += `        <d:resourcetype><d:collection/></d:resourcetype>\n`
-  xml += `        <d:getlastmodified>${new Date().toUTCString()}</d:getlastmodified>\n`
-  xml += `      </d:prop>\n`
-  xml += `      <d:status>HTTP/1.1 200 OK</d:status>\n`
-  xml += `    </d:propstat>\n`
-  xml += `  </d:response>\n`
-
-  // 直接子项
   for (const item of items) {
     const itemHref = buildDavChildHref(requestPath, item.name, item.isFolder)
-    xml += `  <d:response>\n`
-    xml += `    <d:href>${itemHref}</d:href>\n`
-    xml += `    <d:propstat>\n`
-    xml += `      <d:prop>\n`
-    if (item.isFolder) {
-      xml += `        <d:resourcetype><d:collection/></d:resourcetype>\n`
-    } else {
-      xml += `        <d:resourcetype/>\n`
-      xml += `        <d:getcontentlength>${item.size}</d:getcontentlength>\n`
-      xml += `        <d:getcontenttype>application/octet-stream</d:getcontenttype>\n`
-    }
-    const dateStr = item.modified
-      ? new Date(item.modified).toUTCString()
-      : new Date().toUTCString()
-    xml += `        <d:getlastmodified>${dateStr}</d:getlastmodified>\n`
-    xml += `      </d:prop>\n`
-    xml += `      <d:status>HTTP/1.1 200 OK</d:status>\n`
-    xml += `    </d:propstat>\n`
-    xml += `  </d:response>\n`
+    xml += webDavResourceResponse(itemHref, item)
   }
 
   xml += `</d:multistatus>`

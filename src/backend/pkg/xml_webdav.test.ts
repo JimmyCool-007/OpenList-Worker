@@ -205,3 +205,23 @@ test("XML 结构完整且标签配平", () => {
   assert.equal((xml.match(/<\/d:response>/g) || []).length, 2)
   assert.equal((xml.match(/<d:href>/g) || []).length, 2)
 })
+
+test("请求文件自身时输出文件属性与原始 href", () => {
+  const xml = generateWebDavXml("/dav/a%20b&c.txt", [], {
+    isFolder: false,
+    size: 9,
+    modified: "2026-10-04T00:00:00Z",
+  })
+  assert.deepEqual(hrefs(xml), ["/dav/a%20b%26c.txt"])
+  assert.deepEqual(collectionFlags(xml), [false])
+  assert.ok(xml.includes("<d:resourcetype/>"))
+  assert.ok(xml.includes("<d:getcontentlength>9</d:getcontentlength>"))
+  assert.ok(
+    xml.includes("<d:getcontenttype>application/octet-stream</d:getcontenttype>"),
+  )
+  assert.ok(
+    xml.includes(
+      "<d:getlastmodified>Sun, 04 Oct 2026 00:00:00 GMT</d:getlastmodified>",
+    ),
+  )
+})
