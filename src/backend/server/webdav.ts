@@ -343,19 +343,18 @@ webdavRouter.all("/*", async (c) => {
         if (await deniedByMetaRead(c, user, actualPath, metaPassword)) {
           return metaForbidden(c)
         }
-        const depth = c.req.header("Depth") || "1"
-        const res = await listItems(actualPath, ctx)
-        const items = (res.content || []).map((it: any) => ({
-          name: it.name,
-          size: it.size || 0,
-          isFolder: !!it.is_dir,
-          modified: it.modified || new Date().toISOString(),
-        }))
-        // davPathOf 已剥掉挂载前缀，那是给存储层寻址用的；href 必须反映真实请求
-        // 路径。少了挂载前缀，rclone / Windows 资源管理器会因「返回的 href 与请求
-        // 路径对不上」丢弃全部记录（能下载但列不出目录）。见 Issue #104。
-        const xml = buildWebDavPropfindResponse(davRequestPath(c), items)
-        return c.body(xml, depth === "0" ? 207 : 207, {
+        const { item } = await getItem(actualPath, ctx)
+        const children =
+          item.is_dir && c.req.header("Depth") !== "0"
+            ? (await listItems(actualPath, ctx)).content
+            : []
+        // href 必须使用客户端请求路径，不能回显存储路径（见 Issue #104）。
+        const xml = buildWebDavPropfindResponse(
+          davRequestPath(c),
+          item,
+          children,
+        )
+        return c.body(xml, 207, {
           "Content-Type": "application/xml; charset=utf-8",
         })
       }
@@ -486,7 +485,10 @@ webdavRouter.all("/*", async (c) => {
     }
   } catch (e: any) {
     const msg = safeErrorMessage(e)
-    if (msg.includes("not found") || msg.includes("storage not found")) {
+    if (
+      msg.toLowerCase().includes("not found") ||
+      (method === "PROPFIND" && (e?.code === "ENOENT" || e?.code === "ENOTDIR"))
+    ) {
       return c.text("Not Found", 404)
     }
     return c.text(msg, 500)
