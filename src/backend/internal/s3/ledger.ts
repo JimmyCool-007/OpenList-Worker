@@ -206,6 +206,11 @@ export class UploadLedger {
     return this.jobs("SELECT data FROM s3_jobs WHERE state IN ('creating','putting','open','sealing','aborting') AND created<=? ORDER BY created LIMIT 20", cutoff)
   }
 
+  failedExpired(cutoff: number) {
+    // Use the time the job last entered/updated its failed state, not upload creation.
+    return this.jobs("SELECT data FROM s3_jobs WHERE state='failed' AND updated<=? ORDER BY updated LIMIT 20", cutoff)
+  }
+
   hasWork() {
     return !!this.rows("SELECT 1 FROM s3_jobs WHERE " + HAS_DESTINATION_LOCK + " LIMIT 1").length
   }
