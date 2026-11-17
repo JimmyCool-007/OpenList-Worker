@@ -36,12 +36,22 @@ export interface LedgerStorage {
 
 export type Audit = { bytes: number; finished: number; cursor?: string; scanning?: number; started?: number }
 
+const HAS_DESTINATION_LOCK = "state NOT IN ('done','aborted','failed')"
+
 export class UploadLedger {
   constructor(private readonly storage: LedgerStorage) {
     const { sql } = storage
     sql.exec("CREATE TABLE IF NOT EXISTS s3_jobs (id TEXT PRIMARY KEY, path TEXT NOT NULL, destination TEXT NOT NULL, state TEXT NOT NULL, bytes INTEGER NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, due INTEGER NOT NULL, data TEXT NOT NULL)")
-    sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS s3_active_path ON s3_jobs(path) WHERE state NOT IN ('done', 'aborted')")
-    sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS s3_active_destination ON s3_jobs(destination) WHERE state NOT IN ('done', 'aborted')")
+    // Preserve index names so an earlier Worker can still open the database after a rollback.
+    storage.transactionSync(() => {
+      for (const column of ["path", "destination"]) {
+        const name = "s3_active_" + column
+        const existing = sql.exec("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?", name).toArray()[0]?.sql
+        if (typeof existing === "string" && existing.endsWith(HAS_DESTINATION_LOCK)) continue
+        sql.exec("DROP INDEX IF EXISTS " + name)
+        sql.exec("CREATE UNIQUE INDEX " + name + " ON s3_jobs(" + column + ") WHERE " + HAS_DESTINATION_LOCK)
+      }
+    })
     sql.exec("CREATE INDEX IF NOT EXISTS s3_jobs_path ON s3_jobs(path, updated DESC)")
     sql.exec("CREATE INDEX IF NOT EXISTS s3_jobs_due ON s3_jobs(state, due)")
     sql.exec("CREATE TABLE IF NOT EXISTS s3_parts (id TEXT NOT NULL, number INTEGER NOT NULL, size INTEGER NOT NULL, pending INTEGER NOT NULL, etag TEXT NOT NULL, date INTEGER NOT NULL, PRIMARY KEY(id, number))")
@@ -61,7 +71,7 @@ export class UploadLedger {
   }
 
   activePath(path: string): UploadJob | undefined {
-    return this.jobs("SELECT data FROM s3_jobs WHERE path = ? AND state NOT IN ('done','aborted')", path)[0]
+    return this.jobs("SELECT data FROM s3_jobs WHERE path = ? AND " + HAS_DESTINATION_LOCK, path)[0]
   }
 
   latest(scope: UploadScope) {
@@ -81,8 +91,9 @@ export class UploadLedger {
 
   insert(job: UploadJob, externalBytes?: number) {
     this.storage.transactionSync(() => {
-      const active = this.rows("SELECT 1 FROM s3_jobs WHERE destination=? AND state NOT IN ('done','aborted')", this.destination(job))
-      if (active.length || this.activePath(job.path)) fail("OperationAborted", "An upload already owns this destination", 409)
+      const active = this.rows("SELECT 1 FROM s3_jobs WHERE destination=? AND id<>? AND " + HAS_DESTINATION_LOCK, this.destination(job), job.id)
+      const atPath = this.activePath(job.path)
+      if (active.length || (atPath && atPath.id !== job.id)) fail("OperationAborted", "An upload already owns this destination", 409)
       if (externalBytes !== undefined) this.requireCapacity(job.bytes, externalBytes)
       this.save(job)
     })
@@ -196,7 +207,7 @@ export class UploadLedger {
   }
 
   hasWork() {
-    return !!this.rows("SELECT 1 FROM s3_jobs WHERE state NOT IN ('done','aborted','failed') LIMIT 1").length
+    return !!this.rows("SELECT 1 FROM s3_jobs WHERE " + HAS_DESTINATION_LOCK + " LIMIT 1").length
   }
 
   prune(cutoff: number) {

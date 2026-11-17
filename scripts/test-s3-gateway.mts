@@ -16,6 +16,7 @@ const unique = "openlist-s3-smoke-" + randomUUID()
 const mib = 1024 * 1024
 const chunk = Buffer.alloc(50 * mib, 91)
 const tail = Buffer.alloc(mib + 1, 23)
+const partCount = 6
 const baseKey = endpoint + "/" + bucket + "/" + unique
 
 async function request(method: string, url: string, body?: string | Uint8Array<ArrayBuffer>, headers?: Record<string, string>) {
@@ -61,15 +62,14 @@ const query = "?uploadId=" + id
 console.log("Staging smoke upload", key, id)
 let completed = false
 try {
-  const etags = await Promise.all([
-    uploadPart(key, id, 1, chunk),
-    uploadPart(key, id, 2, chunk),
-    uploadPart(key, id, 3, tail),
-  ])
+  const etags: string[] = []
+  for (const group of [[1, 2, 3, 4], [5, 6]]) {
+    etags.push(...await Promise.all(group.map(number => uploadPart(key, id, number, chunk))))
+  }
   assert.equal(await uploadPart(key, id, 2, chunk), etags[1])
   const list = await expect(await request("GET", key + query), 200)
   const parts = await list.text()
-  assert.match(parts, /<PartNumber>3<\/PartNumber>/)
+  assert.match(parts, /<PartNumber>6<\/PartNumber>/)
   assert.match(parts, /<Size>52428800<\/Size>/)
   const manifest = "<CompleteMultipartUpload>" + etags.map((etag, i) =>
     "<Part><PartNumber>" + (i + 1) + "</PartNumber><ETag>" + etag + "</ETag></Part>").join("") + "</CompleteMultipartUpload>"
@@ -77,7 +77,7 @@ try {
   completed = true
   const second = await expect(await request("POST", key + query, manifest), 200)
   assert.equal(await first.text(), await second.text())
-  const size = chunk.byteLength * 2 + tail.byteLength
+  const size = chunk.byteLength * partCount
   assert.equal((await expect(await request("HEAD", key), 200)).headers.get("content-length"), String(size))
 
   const deadline = Date.now() + 15 * 60_000

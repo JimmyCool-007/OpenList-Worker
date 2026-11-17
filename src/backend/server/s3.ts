@@ -1,8 +1,8 @@
 import { Hono } from "hono"
 import { authUserFromReq } from "./auth"
 import { getDb } from "../internal/model/db"
-import { fail, quoteETag, S3Failure, uploadCall, uploadsEnabled } from "../internal/s3/protocol"
-import type { UploadStatus } from "../internal/s3/protocol"
+import { fail, JOB_ID, quoteETag, S3Failure, uploadCall, uploadsEnabled } from "../internal/s3/protocol"
+import type { UploadEnv, UploadStatus } from "../internal/s3/protocol"
 import { verifyS3Signature } from "../internal/s3/sigv4"
 import { handleUpload, listS3Uploads, s3Xml, stagedHead, uploadOperation, xmlEscape } from "./s3-multipart"
 import { listS3Objects, s3Timestamp } from "./s3-list"
@@ -229,6 +229,20 @@ ${buckets}
 }
 
 s3Router.get("/", rootS3)
+
+s3Router.post("/", async (c) => {
+  const query = new URL(c.req.url).searchParams
+  if (!query.has("openlist-discard")) return s3Error("InvalidArgument", "Invalid bucket/key", 400)
+  const auth = await authUserFromReq(c)
+  if (!auth || !isAdmin(auth.user)) return s3Error("AccessDenied", "Administrator required", 403)
+  const ids = query.getAll("uploadId")
+  if (ids.length !== 1 || !JOB_ID.test(ids[0])) fail("InvalidArgument", "Exactly one valid upload ID is required")
+  const env = c.env as Partial<UploadEnv> | undefined
+  if (!uploadsEnabled(env)) fail("ServiceUnavailable", "S3 staging bindings or mode are unavailable", 503)
+  return c.json(await uploadCall<UploadStatus>(env, "discard", { id: ids[0] }), 200, {
+    "Cache-Control": "no-store",
+  })
+})
 
 // Hono dispatches HEAD through GET and strips the response body.
 s3Router.get("/*", async (c) => {

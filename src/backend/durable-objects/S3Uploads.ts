@@ -77,6 +77,11 @@ export class S3Uploads {
         case "/step":
           if (params.id && JOB_ID.test(params.id)) await this.step(params.id)
           return Response.json({ ok: true })
+        case "/discard": {
+          const id = params.id
+          if (!id || !JOB_ID.test(id)) fail("NoSuchUpload", "Upload was not found", 404)
+          return Response.json(await this.exclusive(id, 0, () => this.discardFailed(id)))
+        }
         case "/head": {
           const job = this.ledger.activePath(params.path)
           return Response.json(job?.owner === params.owner && job.etag ? statusOf(job) : null)
@@ -117,13 +122,20 @@ export class S3Uploads {
             if (job.state !== "failed" && job.state !== "staged" && job.state !== "verified") {
               fail("InvalidRequest", "Only staged or failed transfers can be retried", 409)
             }
-            if (!job.etag) fail("InvalidRequest", "Staged object requires operator inspection", 409)
-            job.state = job.offset === job.size && !job.session ? "verified" : "staged"
+            if (!job.etag) {
+              const object = await this.env.R2.head(stagedKey(job))
+              if (!object || !isJobObject(job, object)) {
+                fail("InvalidRequest", "Staged object requires operator inspection", 409)
+              }
+              job.etag = object.etag.replace(/^"|"$/g, "")
+              job.version = object.version
+            }
+            job.state = job.driveId && job.offset === job.size && !job.session ? "verified" : "staged"
             job.attempts = 0
             job.error = undefined
             job.next = 0
             job.sent = 0
-            this.ledger.save(job)
+            this.ledger.insert(job)
             await this.ensureAlarm()
             await this.dispatch(job)
             return statusOf(job)
@@ -300,12 +312,44 @@ export class S3Uploads {
   }
 
   private async seal(job: UploadJob) {
-    let object = await this.env.R2.head(stagedKey(job))
+    const key = stagedKey(job)
+    let object = await this.env.R2.head(key)
     if (!object) {
       await this.state.storage.sync()
-      object = await this.multipart(job).complete(job.manifest!)
+      await this.multipart(job).complete(job.manifest!)
+      object = await this.env.R2.head(key)
+      if (!object) fail("ServiceUnavailable", "Completed R2 metadata is unavailable. Retry Complete.", 503)
     }
     await this.stage(job, object)
+  }
+
+  private async discardFailed(id: string) {
+    const job = this.ledger.job(id)
+    if (!job) fail("NoSuchUpload", "Upload was not found", 404)
+    if (job.state === "aborted") return statusOf(job)
+    if (job.state !== "failed") fail("InvalidRequest", "Only failed uploads can be discarded", 409)
+
+    const key = stagedKey(job)
+    const object = await this.env.R2.head(key)
+    if (object) {
+      if (object.key !== key || !isJobObject(job, object)) {
+        fail("InvalidRequest", "R2 object identity does not match the job. Nothing was discarded.", 409)
+      }
+      await this.env.R2.delete(key)
+      if (await this.env.R2.head(key)) fail("OperationAborted", "R2 object still exists. Retry after inspection.", 409)
+    }
+
+    job.state = "aborted"
+    job.bytes = 0
+    job.etag = undefined
+    job.version = undefined
+    job.manifest = undefined
+    job.session = undefined
+    job.updated = Date.now()
+    this.ledger.closeParts(job)
+    await this.state.storage.sync()
+    console.info("[s3-upload] administrator discarded failed upload", id)
+    return statusOf(job)
   }
 
   private async complete(job: UploadJob, manifest: Manifest, expectedSize?: number) {

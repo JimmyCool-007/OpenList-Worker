@@ -2,9 +2,13 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
+import { Hono } from "hono"
+import { sign } from "hono/jwt"
 import { S3Uploads } from "../../durable-objects/S3Uploads"
 import { signS3Headers } from "../../drivers/s3/sigv4"
 import type { GoogleDriveClient } from "../../drivers/google_drive/util"
+import { saveDb } from "../model/db"
+import { s3Router } from "../../server/s3"
 import { UploadLedger } from "./ledger"
 import type { LedgerStorage, UploadJob } from "./ledger"
 import { MAX_BUCKET_BYTES, MAX_FILE_SIZE, MiB, S3_CHUNK_SIZE, STAGING_PREFIX } from "./protocol"
@@ -204,7 +208,7 @@ function fakeServices() {
             objects.set(key, object)
             prefixMpu.delete(key)
             if (loseComplete) throw new Error("lost Complete response after R2 persisted the object")
-            return object
+            return { ...object, customMetadata: undefined }
           },
         }
       },
@@ -282,6 +286,109 @@ function calls(coordinator: S3Uploads) {
     return { response, body: await response.json() as T }
   }
 }
+
+test("legacy failed jobs release both locks without discarding staged data", async () => {
+  const storage = memoryStorage()
+  const first = new UploadLedger(storage)
+  const failed = { ...newJob("/drive/test.bin", 3), state: "failed" as const }
+  first.insert(failed)
+  storage.sql.exec("DROP INDEX s3_active_path")
+  storage.sql.exec("DROP INDEX s3_active_destination")
+  storage.sql.exec("CREATE UNIQUE INDEX s3_active_path ON s3_jobs(path) WHERE state NOT IN ('done','aborted')")
+  storage.sql.exec("CREATE UNIQUE INDEX s3_active_destination ON s3_jobs(destination) WHERE state NOT IN ('done','aborted')")
+  const ledger = new UploadLedger(storage)
+  const replacement = newJob(failed.path)
+  ledger.insert(replacement)
+  assert.equal(new UploadLedger(storage).activePath(failed.path)?.id, replacement.id)
+  assert.equal(ledger.reserved(), 3)
+  assert.throws(() => ledger.insert({ ...failed, state: "staged" }), { code: "OperationAborted" })
+  const aliased = { ...replacement, id: crypto.randomUUID(), path: "/alias/test.bin" }
+  assert.throws(() => ledger.insert(aliased), { code: "OperationAborted" })
+})
+
+test("discard checks the exact failed object's identity and releases only its reservation", async (t) => {
+  const state = { storage: memoryStorage() }
+  const fake = fakeServices()
+  const ledger = new UploadLedger(state.storage)
+  const failed = { ...newJob("/drive/test.bin", 3), state: "failed" as const, size: 3, version: "v1" }
+  const other = { ...failed, ...newJob("/drive/other.bin", 4), state: "failed" as const, size: 4 }
+  const key = STAGING_PREFIX + failed.id
+  const object = { key, size: 3, etag: "etag", version: "v1", customMetadata: { openlistUpload: failed.id } }
+  const otherKey = STAGING_PREFIX + other.id
+  ledger.insert(failed)
+  ledger.insert(other)
+  fake.objects.set(otherKey, { ...object, key: otherKey, size: 4, customMetadata: { openlistUpload: other.id } })
+  const request = calls(new S3Uploads(state, fake.env, async () => fake.client))
+  const payload = newJob(failed.path)
+  const replacement = await request<UploadStatus>("create", payload)
+  assert.equal(replacement.response.status, 200)
+  assert.equal((await request("discard", { id: replacement.body.id })).response.status, 409)
+  assert.equal((await request("retry", { ...failed })).response.status, 409)
+
+  for (const foreign of [
+    { ...object, customMetadata: { openlistUpload: other.id } },
+    { ...object, version: "v2" },
+    { ...object, size: 4 },
+  ]) {
+    fake.objects.set(key, foreign)
+    assert.equal((await request("discard", { id: failed.id })).response.status, 409)
+    assert.equal(fake.objects.get(key), foreign)
+    assert.equal(ledger.reserved(), 7)
+  }
+
+  fake.objects.set(key, object)
+  const remove = fake.env.R2.delete
+  const deleteMock = t.mock.method(fake.env.R2, "delete", async () => { throw new Error("R2 unavailable") })
+  assert.equal((await request("discard", { id: failed.id })).response.status, 503)
+  assert.equal(ledger.reserved(), 7)
+  deleteMock.mock.restore()
+  assert.equal(fake.env.R2.delete, remove)
+  const discarded = await request<UploadStatus>("discard", { id: failed.id })
+  assert.equal(discarded.response.status, 200)
+  assert.equal(discarded.body.state, "aborted")
+  assert.equal(discarded.body.bytes, 0)
+  assert.equal((await request("discard", { id: failed.id })).response.status, 200)
+  assert.equal(fake.objects.has(key), false)
+  assert.equal(fake.objects.has(otherKey), true)
+  assert.equal(ledger.reserved(), 4)
+  assert.equal(ledger.activePath(failed.path)?.id, replacement.body.id)
+})
+
+test("S3 discard requires an administrator JWT and passes a single ID to the coordinator", async () => {
+  const received: unknown[] = []
+  const env = {
+    ...fakeServices().env,
+    JWT_SECRET: "only-for-s3-discard-regression",
+    S3_UPLOADS: {
+      idFromName: () => "coordinator",
+      get: () => ({
+        async fetch(request: Request) {
+          assert.equal(new URL(request.url).pathname, "/discard")
+          received.push(await request.json())
+          return Response.json({ state: "aborted", bytes: 0 })
+        },
+      }),
+    },
+  }
+  const users = [
+    { id: 1, username: "admin-test", role: 2 },
+    { id: 7, username: "owner-test", role: 0 },
+  ]
+  assert.equal(await saveDb({ users, settings: [], storages: [] }, env, { force: true }), true)
+  const app = new Hono().route("/s3", s3Router)
+  const id = crypto.randomUUID()
+  const url = "/s3?openlist-discard&uploadId=" + id
+  const post = (path: string, bearer?: string) => app.request(path, {
+    method: "POST",
+    headers: bearer ? { Authorization: "Bearer " + bearer } : {},
+  }, env)
+  const [admin, owner] = await Promise.all(users.map(({ id }) => sign({ id }, env.JWT_SECRET, "HS256")))
+  assert.equal((await post(url)).status, 403)
+  assert.equal((await post(url, owner)).status, 403)
+  assert.equal((await post(url + "&uploadId=" + crypto.randomUUID(), admin)).status, 400)
+  assert.equal((await post(url, admin)).status, 200)
+  assert.deepEqual(received, [{ id }])
+})
 
 test("multipart retries, duplicate Complete, queue redelivery, resume and verified deletion", async (t) => {
   const state = { storage: memoryStorage() }
