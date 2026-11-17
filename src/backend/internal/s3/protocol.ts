@@ -105,6 +105,7 @@ export interface UploadEnv {
   S3_SECRET_ACCESS_KEY?: string
   S3_USER_ID?: string
   S3_EXTERNAL_MULTIPART_BYTES?: string
+  S3_FAILED_RETENTION_HOURS?: string
 }
 
 export function uploadsEnabled(env?: Partial<UploadEnv>): env is UploadEnv {
