@@ -354,6 +354,63 @@ test("discard checks the exact failed object's identity and releases only its re
   assert.equal(ledger.activePath(failed.path)?.id, replacement.body.id)
 })
 
+test("failed staging is automatically discarded 24 hours after failure, never before", async (t) => {
+  const state = { storage: memoryStorage() }
+  const fake = fakeServices()
+  fake.env.S3_FAILED_RETENTION_HOURS = "24"
+  const ledger = new UploadLedger(state.storage)
+  const clockStart = Date.now()
+  let clock = clockStart
+  t.mock.method(Date, "now", () => clock)
+  const failed = { ...newJob("/drive/expired-failure.bin", 3), state: "failed" as const, size: 3, version: "v1" }
+  failed.created = clockStart - 3 * 24 * 60 * 60_000
+  failed.updated = clockStart
+  ledger.insert(failed)
+  const key = STAGING_PREFIX + failed.id
+  fake.objects.set(key, {
+    key, size: 3, version: "v1", etag: "etag",
+    customMetadata: { openlistUpload: failed.id },
+  })
+  const coordinator = new S3Uploads(state, fake.env, async () => fake.client)
+  clock += 24 * 60 * 60_000 - 1
+  await coordinator.alarm()
+  assert.ok(fake.objects.has(key), "must retain the complete R2 object before 24 hours")
+  assert.equal(ledger.job(failed.id)?.state, "failed")
+  assert.equal(ledger.reserved(), 3)
+
+  clock += 2
+  await coordinator.alarm()
+  assert.equal(fake.objects.has(key), false)
+  assert.equal(ledger.job(failed.id)?.state, "aborted")
+  assert.equal(ledger.reserved(), 0)
+})
+
+test("automatic failed cleanup retains a mismatched object and disables unsafe retention settings", async (t) => {
+  const state = { storage: memoryStorage() }
+  const fake = fakeServices()
+  const ledger = new UploadLedger(state.storage)
+  let clock = Date.now()
+  t.mock.method(Date, "now", () => clock)
+  const job = { ...newJob("/drive/foreign-object.bin", 3), state: "failed" as const, size: 3, version: "v1" }
+  ledger.insert(job)
+  const key = STAGING_PREFIX + job.id
+  const wrong = {
+    key, size: 3, etag: "etag", version: "v2",
+    customMetadata: { openlistUpload: job.id },
+  }
+  fake.objects.set(key, wrong)
+  const coordinator = new S3Uploads(state, fake.env, async () => fake.client)
+  clock += 25 * 60 * 60_000
+  fake.env.S3_FAILED_RETENTION_HOURS = "23"
+  await coordinator.alarm()
+  assert.equal(ledger.job(job.id)?.state, "failed")
+  fake.env.S3_FAILED_RETENTION_HOURS = "24"
+  await coordinator.alarm()
+  assert.equal(ledger.job(job.id)?.state, "failed")
+  assert.equal(fake.objects.get(key), wrong)
+  assert.equal(ledger.reserved(), 3)
+})
+
 test("S3 discard requires an administrator JWT and passes a single ID to the coordinator", async () => {
   const received: unknown[] = []
   const env = {
