@@ -323,6 +323,15 @@ export class S3Uploads {
     await this.stage(job, object)
   }
 
+  private failedRetentionMs(): number {
+    // Opt-in only: invalid values MUST NOT cause unintentional deletion.
+    const raw = this.env.S3_FAILED_RETENTION_HOURS ?? "0"
+    if (!/^(?:0|[1-9]\d*)$/.test(raw)) return 0
+    const hours = Number(raw)
+    if (!Number.isSafeInteger(hours) || (hours !== 0 && (hours < 24 || hours > 24 * 30))) return 0
+    return hours * 60 * MINUTE
+  }
+
   private async discardFailed(id: string) {
     const job = this.ledger.job(id)
     if (!job) fail("NoSuchUpload", "Upload was not found", 404)
@@ -337,6 +346,18 @@ export class S3Uploads {
       }
       await this.env.R2.delete(key)
       if (await this.env.R2.head(key)) fail("OperationAborted", "R2 object still exists. Retry after inspection.", 409)
+    } else if (job.r2UploadId) {
+      // An old failed record may have uncommitted R2 multipart parts instead of
+      // a complete object. Never release the reservation until abort confirms
+      // those parts are gone (NoSuchUpload is also safe).
+      try {
+        await this.multipart(job).abort()
+      } catch (error) {
+        if (!missingR2Upload(error)) throw error
+      }
+      if (await this.env.R2.head(key)) {
+        fail("OperationAborted", "R2 object appeared during multipart abort. Inspect before discarding.", 409)
+      }
     }
 
     job.state = "aborted"
@@ -506,6 +527,25 @@ export class S3Uploads {
       } catch (error) {
         if (!(error instanceof S3Failure && error.code === "NoSuchUpload")) {
           console.warn("[s3-upload] incomplete upload cleanup deferred", id)
+        }
+      }
+    }
+    const retention = this.failedRetentionMs()
+    if (retention > 0) {
+      for (const { id } of this.ledger.failedExpired(now - retention)) {
+        if (this.active.has(id)) continue
+        try {
+          await this.exclusive(id, 0, async () => {
+            const job = this.ledger.job(id)
+            if (!job || job.state !== "failed" || job.updated > now - retention) return
+            // Reuse the same identity checks and delete-confirmation as the
+            // administrator-only discard action. Never delete other R2 keys.
+            await this.discardFailed(id)
+            console.info("[s3-upload] expired failed staging discarded", id)
+          })
+        } catch (error) {
+          console.warn("[s3-upload] expired failed staging retained", id,
+            error instanceof S3Failure ? error.code : "CleanupFailed")
         }
       }
     }
