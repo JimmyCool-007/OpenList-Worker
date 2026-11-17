@@ -30,9 +30,14 @@ export async function writeUploadBody<T>(
       size += chunk.byteLength
       if (size > length) reject("Body is larger than Content-Length")
       for (const { hash } of hashes) hash.update(chunk)
-      // Keep the final bytes back until the input has ended and its digest passes.
-      if (size === length && chunk.byteLength) last = chunk
-      else if (chunk.byteLength) controller.enqueue(chunk)
+      // Do not let R2 finish writing until the input and its digest are verified.
+      if (size === length && chunk.byteLength) {
+        const end = chunk.byteLength - 1
+        last = Uint8Array.of(chunk[end])
+        if (end) controller.enqueue(chunk.subarray(0, end))
+      } else if (chunk.byteLength) {
+        controller.enqueue(chunk)
+      }
     },
     flush(controller) {
       if (size !== length) reject("Body does not match Content-Length")

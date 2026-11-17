@@ -108,6 +108,8 @@ curl -fsS -X POST -H "Authorization: Bearer $OPENLIST_JWT" \
   "$OPENLIST_URL/s3/drive/openlist-300MiB.bin?openlist-retry&uploadId=$UPLOAD_ID"
 ~~~
 
+客户端如发生网络中断，可用相同 UploadId 的 ListParts 核对已保存分片，重传缺失分片，再用同一清单重试 Complete。Rclone 进程重启后的新命令可能创建新的 UploadId。旧任务会按 24 小时规则处理，也可用原 UploadId 主动取消。
+
 若检测到 R2 数据版本改变或 Drive 文件冲突，先对照任务 ID 与 Drive 文件归属，保留 R2 副本，在确认后再修正目标或手工恢复。失败任务不会自动删除整对象。24 小时定时清理仅取消未完成的上传。回滚时先把 S3_UPLOAD_MODE 改为 drain。此模式暂停新上传，已有上传可完成、取消和转存。确认所有任务完成，或已独立保存失败任务的 R2 对象与 Drive 目标对应关系后，才切回旧 Worker 版本。保留 S3_UPLOADS 和迁移记录，暂存文件仍有待转存时保留消费者。不要重置该 Durable Object，或对前缀启用整对象过期规则。
 
 ## 容量与计费

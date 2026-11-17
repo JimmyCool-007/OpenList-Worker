@@ -84,7 +84,7 @@ try {
   while (Date.now() < deadline) {
     const response = await expect(await request("GET", key + query + "&openlist-status"), 200)
     const status = await response.json() as { bytes: number; state: string; size: number; driveId?: string; error?: string }
-    assert.notEqual(status.state, "failed", status.error)
+    assert.notEqual(status.state, "failed", status.error ?? "Drive transfer failed")
     if (status.state === "done") {
       assert.ok(status.driveId)
       assert.equal(status.size, size)

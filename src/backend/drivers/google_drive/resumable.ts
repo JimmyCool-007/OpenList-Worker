@@ -46,9 +46,9 @@ export async function driveChildren(client: GoogleDriveClient, parent: string, n
     pageSize: "2",
   }))
   if (!response.ok) throw new DriveUploadError("find destination", response.status)
-  const result = await response.json() as { files: DriveUploadFile[]; nextPageToken?: string }
+  const result = await response.json() as { files?: DriveUploadFile[]; nextPageToken?: string }
   if (result.nextPageToken) throw new DriveUploadError("ambiguous destination", 409)
-  return result.files
+  return result.files ?? []
 }
 
 export async function driveParent(client: GoogleDriveClient, physicalPath: string) {

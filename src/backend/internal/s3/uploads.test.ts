@@ -115,6 +115,7 @@ function fakeServices() {
   let completeCalls = 0
   let abortCalls = 0
   let sendFails = false
+  let loseComplete = false
   let wrongSize = false
   let committed = 0
   let lost = true
@@ -183,6 +184,7 @@ function fakeServices() {
             const object = makeObject(key, chosen.reduce((sum, part) => sum + part.size, 0), "r2-multipart-etag", upload.options)
             objects.set(key, object)
             prefixMpu.delete(key)
+            if (loseComplete) throw new Error("lost Complete response after R2 persisted the object")
             return object
           },
         }
@@ -243,6 +245,7 @@ function fakeServices() {
   return {
     env, client, objects, queue, writes,
     setQueueFailure(fail: boolean) { sendFails = fail },
+    loseCompleteResponse() { loseComplete = true },
     setWrongSize(wrong: boolean) { wrongSize = wrong },
     completeCalls: () => completeCalls,
     abortCalls: () => abortCalls,
@@ -397,4 +400,35 @@ test("zero-byte signed PUT can stage an empty object with the correct digest", a
   assert.equal(response.body.size, 0)
   assert.equal(response.body.state, "staged")
   assert.equal(fake.objects.get(STAGING_PREFIX + response.body.id)?.size, 0)
+})
+
+test("a completed R2 object is recovered after a lost response and is never treated as abandoned", async (t) => {
+  const fake = fakeServices()
+  const state = { storage: memoryStorage() }
+  const start = () => new S3Uploads(state, fake.env, async () => fake.client)
+  let coordinator = start()
+  const req = calls(coordinator)
+  let clock = Date.now()
+  t.mock.method(Date, "now", () => clock)
+  const path = "/drive/undelivered-complete.bin"
+  const { body: job } = await req<UploadStatus>("create", newJob(path))
+  const args = { path, owner: 7, id: job.id }
+  const { body: part } = await req<Part>("part", { ...args, number: 1, size: 3 }, new Uint8Array([1, 2, 3]))
+  fake.loseCompleteResponse()
+  const manifest = [{ partNumber: 1, etag: part.etag }]
+  assert.equal((await req("complete", { ...args, manifest })).response.status, 503)
+  assert.ok(fake.objects.has(STAGING_PREFIX + job.id))
+  assert.equal(fake.queue.length, 0)
+  assert.equal((await req<UploadStatus>("status", args)).body.state, "sealing")
+
+  coordinator = start()
+  clock += 61_000
+  await coordinator.alarm()
+  assert.deepEqual(fake.queue, [job.id])
+  assert.equal(fake.completeCalls(), 1)
+  const result = await calls(coordinator)<UploadStatus>("complete", { ...args, manifest })
+  assert.equal(result.body.state, "staged")
+  assert.equal(result.body.size, 3)
+  assert.equal((await calls(coordinator)("abort", args)).response.status, 404)
+  assert.ok(fake.objects.has(STAGING_PREFIX + job.id))
 })
