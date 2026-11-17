@@ -116,3 +116,7 @@ jobs:
       - name: Bundle Cloudflare Worker without deploying
         if: "!cancelled() && steps.install.outcome == 'success'"
         run: pnpm exec wrangler deploy --dry-run --outdir /tmp/openlist-worker-dry-run
+
+      - name: R2 binding multipart and failed-upload cleanup
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: node --import tsx scripts/test-s3-r2-binding.mts

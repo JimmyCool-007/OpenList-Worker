@@ -72,7 +72,7 @@ $f = [IO.File]::Create("openlist-2GiB.bin")
 try { $f.SetLength(2GB) } finally { $f.Dispose() }
 ~~~
 
-可执行的测试 Worker 集成测试发送两份真实 50 MiB 分片与一个短尾片，故意并发、重传、重复 Complete 并取消另一笔测试上传。它会等待目标转存成功并保留测试 Drive 文件。
+可执行的测试 Worker 集成测试用新文件名上传 300 MiB，共六个 50 MiB 分片。它会检查并发、重传、重复 Complete，取消另一笔测试上传，并等待 Drive 校验和 R2 清理。测试完成后会保留 Drive 文件。`OPENLIST_TEST_S3_BUCKET` 默认为 `drive`，也可以指定 S3 用户实际可见的测试目录。
 
 ~~~sh
 export OPENLIST_TEST_S3_ENDPOINT=https://your-staging-worker.example/s3
@@ -101,12 +101,21 @@ curl -fsS --user "$OPENLIST_DAV_USER:$OPENLIST_DAV_PASS" -L \
 sha256sum openlist-300MiB.bin openlist-300MiB.download.bin
 ~~~
 
-Drive 返回 308 时记录确认位置。响应丢失则重新查询当前偏移，会话过期后用同一预生成的文件 ID 重开，会话完成则查询 Drive 文件验证归属、目录、大小和可用的全文件 MD5。队列重投和后台调度会继续同一任务。失败自动退避，连续失败十次后状态为 failed，R2 对象及其预留会保留。修复授权、目标目录或服务后，用返回的任务 ID 重试。
+Drive 返回 308 时记录确认位置。响应丢失则重新查询当前偏移，会话过期后用同一预生成的文件 ID 重开，会话完成则查询 Drive 文件验证归属、目录、大小和可用的全文件 MD5。队列重投和后台调度会继续同一任务。失败自动退避，连续失败十次后状态为 failed，R2 对象及其预留会保留，目标锁会释放。重试原任务会先重新获取目标锁。如果同一目标已由新任务占用，原任务的重试会返回 409。
 
 ~~~sh
 curl -fsS -X POST -H "Authorization: Bearer $OPENLIST_JWT" \
   "$OPENLIST_URL/s3/drive/openlist-300MiB.bin?openlist-retry&uploadId=$UPLOAD_ID"
 ~~~
+
+如果确认单个失败任务的数据可丢弃，可使用 OpenList 管理员 JWT 释放其预留。清理接口只接受一个任务 ID，在 R2 对象仍在时核验其归属、大小及已记录的版本，删除后再次发 HEAD 检查；成功返回 `state=aborted` 和 `bytes=0`。已清理的请求可重放。对象身份无法核对时返回 409 并保留数据。此操作只涉及该任务的暂存对象和 Durable Object 记录，Google Drive 文件继续保留。
+
+~~~sh
+curl -fsS -X POST -H "Authorization: Bearer $OPENLIST_ADMIN_JWT" \
+  "$OPENLIST_URL/s3?openlist-discard&uploadId=$UPLOAD_ID"
+~~~
+
+本地运行 `node --import tsx scripts/test-s3-r2-binding.mts`，可在隔离的 Cloudflare 本地运行时验证 Multipart、R2 HEAD、旧失败记录、清理和容量释放。
 
 客户端如发生网络中断，可用相同 UploadId 的 ListParts 核对已保存分片，重传缺失分片，再用同一清单重试 Complete。Rclone 进程重启后的新命令可能创建新的 UploadId。旧任务会按 24 小时规则处理，也可用原 UploadId 主动取消。
 
