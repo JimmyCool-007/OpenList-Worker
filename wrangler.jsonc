@@ -10,10 +10,10 @@
   "name": "openlist-worker",
   "main": "src/backend/worker.ts",
 
-  // 将 fetch 请求的 Worker 执行位置尽量安排在东京附近（AWS Tokyo）。
-  // 这不是固定入口 IP，不改变 R2 Bucket 或已有 Durable Object 的位置。
-  // 可更换 region 或删除整个 placement 配置，恢复全球默认执行策略。
-  "placement": { "region": "aws:ap-northeast-1" },
+  // Smart Placement 根据请求和上游服务的延迟自动选择 Worker 执行位置。
+  // 不固定 Cloudflare 入口 IP，不迁移 R2 Bucket 或已有 Durable Object。
+  // 如需恢复东京模式，可改为 { "region": "aws:ap-northeast-1" }。
+  "placement": { "mode": "smart" },
 
   // iconv-lite 只有 FTP 驱动在用，而 Workers 没有 TCP socket、FTP 驱动不可用。
   // build-edge.mjs 早已把 iconv-lite 当作 external / 空模块，但 `wrangler deploy`
