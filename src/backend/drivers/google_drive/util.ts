@@ -74,6 +74,7 @@ export class GoogleDriveClient {
         })
         const res = await fetch(`${apiUrl}?${params.toString()}`, {
           method: "GET",
+          signal: AbortSignal.timeout(10_000),
         })
         if (!res.ok) {
           throw new Error(`[Status ${res.status}]`)
@@ -111,6 +112,7 @@ export class GoogleDriveClient {
       try {
         const res = await fetch(GDRIVE_TOKEN_URL, {
           method: "POST",
+          signal: AbortSignal.timeout(10_000),
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
             client_id: clientId,
@@ -183,6 +185,25 @@ export class GoogleDriveClient {
     if (res.status === 204) return null as T
 
     return res.json()
+  }
+
+  /** Raw responses are needed for Drive's 308 resume status and Location header. */
+  public async requestUpload(url: string, options: RequestInit = {}, retry = true): Promise<Response> {
+    await this.ensureToken()
+    const headers = new Headers(options.headers)
+    headers.set("Authorization", "Bearer " + this.accessToken)
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      redirect: "manual",
+      signal: options.signal ?? AbortSignal.timeout(75_000),
+    })
+    if (response.status === 401 && retry) {
+      await response.body?.cancel()
+      await this.refreshAccessToken()
+      return this.requestUpload(url, options, false)
+    }
+    return response
   }
 
   // ===================================================

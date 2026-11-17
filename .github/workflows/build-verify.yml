@@ -66,6 +66,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        id: install
         run: pnpm install --frozen-lockfile
 
       - name: Fetch official frontend dist
@@ -98,3 +99,20 @@ jobs:
           done
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "OK: 两处 server-handler 入口均为占位文件"
+
+      - name: TypeScript check
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: pnpm lint
+
+      - name: S3 upload and WebDAV regression tests
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: |
+          s3=0
+          webdav=0
+          pnpm exec tsx --test src/backend/internal/s3/uploads.test.ts || s3=$?
+          pnpm exec tsx --test src/backend/server/webdav_get_sign.test.ts src/backend/server/webdav_propfind.test.ts || webdav=$?
+          exit $((s3 || webdav))
+
+      - name: Bundle Cloudflare Worker without deploying
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: pnpm exec wrangler deploy --dry-run --outdir /tmp/openlist-worker-dry-run

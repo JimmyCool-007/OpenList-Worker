@@ -1,5 +1,5 @@
 // Based on: https://github.com/OpenListTeam/OpenList/tree/main/drivers/s3
-import { DogeCredentials } from "./types"
+import type { DogeCredentials } from "./types"
 
 const encoder = new TextEncoder()
 

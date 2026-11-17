@@ -1,5 +1,11 @@
 import { Hono } from "hono"
 import { authUserFromReq } from "./auth"
+import { getDb } from "../internal/model/db"
+import { fail, quoteETag, S3Failure, uploadCall, uploadsEnabled } from "../internal/s3/protocol"
+import type { UploadStatus } from "../internal/s3/protocol"
+import { verifyS3Signature } from "../internal/s3/sigv4"
+import { handleUpload, listS3Uploads, s3Xml, stagedHead, uploadOperation, xmlEscape } from "./s3-multipart"
+import { listS3Objects, s3Timestamp } from "./s3-list"
 import {
   listItems,
   getItem,
@@ -25,11 +31,8 @@ import {
 import type { Meta } from "../pkg/meta"
 
 /**
- * S3 网关（简化版，挂载于 /s3/*）。
- *
- * 协议：支持 ListBuckets / GetObject / HeadObject / PutObject / DeleteObject，
- * 认证采用 Bearer token（JWT，与全局令牌同一签发体系）；完整 AWS SigV4 签名
- * 验证作为后续增强。
+ * S3 网关使用 OpenList 用户的根目录、权限和目录规则。旧客户端仍可用 JWT，
+ * Rclone 通过部署时配置的 SigV4 凭据映射到一个已有用户。
  *
  * 说明：本网关**不识别** settings.token 形式的静态 API Token —— 静态令牌走
  * 管理后台的 admin 鉴权通道，不是「某个用户」，无法映射到 S3 的对象视图。
@@ -50,21 +53,31 @@ import type { Meta } from "../pkg/meta"
 
 export const s3Router = new Hono()
 
-function xmlEscape(s: string): string {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
-
 function s3Error(code: string, message: string, status: number) {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Error><Code>${xmlEscape(code)}</Code><Message>${xmlEscape(message)}</Message></Error>`
   return new Response(xml, {
     status,
-    headers: { "Content-Type": "application/xml", "x-amz-request-id": "-" },
+    headers: { "Content-Type": "application/xml", "x-amz-request-id": crypto.randomUUID() },
   })
+}
+
+s3Router.onError((error) => {
+  if (error instanceof S3Failure) return s3Error(error.code, error.message, error.status)
+  if (error instanceof URIError) return s3Error("InvalidArgument", "Invalid request path", 400)
+  console.error("[s3] request failed", error.name)
+  return s3Error("InternalError", "S3 request could not be completed", 500)
+})
+
+function isSigned(c: any) {
+  return /^AWS4-/i.test(c.req.header("Authorization") ?? "")
+}
+
+function assertCanonicalPath(path: string) {
+  if (/\\|[\x00-\x1f\x7f]|\.{3}|%[0-9a-f]{2}/i.test(path) ||
+      path.split("/").some((part) => part === "." || part === "..")) {
+    fail("InvalidArgument", "Unsupported S3 path")
+  }
 }
 
 /** 从 pathname 剥离 /s3 前缀，解析 { bucket, key } */
@@ -110,6 +123,12 @@ function outOfScope(c: any) {
 }
 
 async function authUser(c: any): Promise<any | null> {
+  if (isSigned(c)) {
+    if (!uploadsEnabled(c.env)) fail("AccessDenied", "S3 signing is unavailable", 403)
+    const id = await verifyS3Signature(c.req.raw, c.env)
+    const db = await getDb(c.env)
+    return db.users?.find((user: any) => user.id === id && !user.disabled) ?? null
+  }
   const auth = await authUserFromReq(c)
   return auth ? auth.user : null
 }
@@ -129,7 +148,8 @@ const metaPasswordOf = (c: any): string =>
 async function loadMeta(c: any, path: string): Promise<Meta | null> {
   try {
     return await getNearestMeta(path, c.env)
-  } catch {
+  } catch (error) {
+    if (isSigned(c)) throw error
     return null
   }
 }
@@ -175,9 +195,13 @@ const getCtx = (c: any) => {
 }
 
 // GET /s3/ → ListBuckets
-s3Router.get("/", async (c) => {
+async function rootS3(c: any): Promise<Response> {
   const user = await authUser(c)
   if (!user) return s3Error("AccessDenied", "Authentication required", 403)
+  if (new URL(c.req.url).searchParams.has("openlist-quota")) {
+    if (!isAdmin(user) || !uploadsEnabled(c.env)) return s3Error("AccessDenied", "Administrator required", 403)
+    return Response.json(await uploadCall(c.env, "quota", {}), { headers: { "Cache-Control": "no-store" } })
+  }
   try {
     // 仅列出用户根目录之下的「bucket」——受限 base_path 的用户不应看到整站挂载点
     const res = await listItems(getActualPath(user, "/"), getCtx(c))
@@ -202,65 +226,84 @@ ${buckets}
   } catch (e: any) {
     return s3Error("InternalError", safeErrorMessage(e), 500)
   }
-})
+}
 
-// GET /s3/{bucket}/{key} → GetObject
+s3Router.get("/", rootS3)
+
+// Hono dispatches HEAD through GET and strips the response body.
 s3Router.get("/*", async (c) => {
+  const { bucket, key } = parseS3Path(c)
+  if (!bucket) return rootS3(c)
   const user = await authUser(c)
   if (!user) return s3Error("AccessDenied", "Authentication required", 403)
-  const { bucket, key } = parseS3Path(c)
-  if (!isValidS3Bucket(bucket) || !key) {
-    return s3Error("NoSuchKey", "NoSuchKey", 404)
-  }
+  if (!isValidS3Bucket(bucket)) return s3Error("NoSuchBucket", "NoSuchBucket", 404)
+  const request = c.req.raw
+  const signed = isSigned(c)
   const virtualPath = s3VirtualPath(user, bucket, key)
   if (!isWithinUserRoot(user, virtualPath)) return outOfScope(c)
+  if (signed) assertCanonicalPath(virtualPath)
   if (await metaReadDenied(c, user, virtualPath)) {
-    return s3Error("AccessDenied", "Password required for this path", 403)
+    return s3Error("AccessDenied", "Read permission denied for this path", 403)
   }
+  const head = request.method === "HEAD"
+  const query = new URL(request.url).searchParams
+  if (!key) {
+    const { item } = await getItem(virtualPath, getCtx(c)).catch(() => ({ item: null }))
+    if (!item?.is_dir) return s3Error("NoSuchBucket", "NoSuchBucket", 404)
+    if (head) return new Response(null, { headers: { "x-amz-bucket-region": "us-east-1" } })
+    if (query.has("location")) return s3Xml("LocationConstraint", "")
+    if (query.has("uploads")) {
+      if (!canWrite(user)) return s3Error("AccessDenied", "Write permission required", 403)
+      return listS3Uploads(request, c.env as any, { owner: user.id, path: virtualPath }, bucket)
+    }
+    return listS3Objects(query, bucket, virtualPath, getCtx(c), async (path) =>
+      isWithinUserRoot(user, path) && !await metaReadDenied(c, user, path),
+    )
+  }
+  if (uploadOperation(request, signed)) {
+    assertCanonicalPath(virtualPath)
+    return handleUpload(request, c.env as any, { owner: user.id, path: virtualPath }, bucket, key)
+  }
+  if (head && signed && uploadsEnabled(c.env as any)) {
+    const staged = await uploadCall<UploadStatus | null>(c.env as any, "head", { owner: user.id, path: virtualPath })
+    if (staged) return stagedHead(staged)
+  }
+
   try {
     const { item, rawUrl } = await getItem(virtualPath, getCtx(c))
-    if (!item) return s3Error("NoSuchKey", "NoSuchKey", 404)
-    if (item.is_dir) return s3Error("NoSuchKey", "NoSuchKey", 404)
+    if (!item || item.is_dir) return s3Error("NoSuchKey", "NoSuchKey", 404)
+    if (head) {
+      const modified = s3Timestamp(item.modified)
+      const md5 = item.hashes?.md5
+      return new Response(null, {
+        headers: {
+          "Content-Length": String(item.size || 0),
+          "Content-Type": "application/octet-stream",
+          "Last-Modified": modified.toUTCString(),
+          "x-amz-meta-mtime": String(modified.getTime() / 1000),
+          ...(md5 ? { ETag: quoteETag(md5) } : {}),
+        },
+      })
+    }
     if (rawUrl) {
-      // 与 WebDAV / /fs/get 同一套语义：/d、/p 端点没有 Auth 中间件，
-      // 开启 sign_all / link_expiration / 存储级 enable_sign / 密码 meta 时
-      // 裸链接会被判 401 "sign verify failed"（Issue #175）。
-      return c.redirect(
-        await appendDownloadSignToRawUrl(c, rawUrl, virtualPath),
-        302,
-      )
+      // /d and /p use the same download signatures as WebDAV and the file API.
+      return c.redirect(await appendDownloadSignToRawUrl(c, rawUrl, virtualPath), 302)
     }
     return s3Error("NoSuchKey", "NoSuchKey", 404)
-  } catch (e: any) {
-    return s3Error("NoSuchKey", safeErrorMessage(e), 404)
+  } catch (error) {
+    return s3Error("NoSuchKey", safeErrorMessage(error), 404)
   }
 })
 
-// HEAD /s3/{bucket}/{key} → HeadObject
-s3Router.on("HEAD", "/*", async (c) => {
+s3Router.post("/*", async (c) => {
   const user = await authUser(c)
   if (!user) return s3Error("AccessDenied", "Authentication required", 403)
   const { bucket, key } = parseS3Path(c)
-  if (!isValidS3Bucket(bucket) || !key) {
-    return s3Error("NoSuchKey", "NoSuchKey", 404)
-  }
-  const virtualPath = s3VirtualPath(user, bucket, key)
-  if (!isWithinUserRoot(user, virtualPath)) return outOfScope(c)
-  if (await metaReadDenied(c, user, virtualPath)) {
-    return s3Error("AccessDenied", "Password required for this path", 403)
-  }
-  try {
-    const { item } = await getItem(virtualPath, getCtx(c))
-    if (!item || item.is_dir) return s3Error("NoSuchKey", "NoSuchKey", 404)
-    const headers: Record<string, string> = {
-      "Content-Length": String(item.size || 0),
-      "Content-Type": String(item.type || "application/octet-stream"),
-      "Last-Modified": item.modified || new Date().toISOString(),
-    }
-    return new Response(null, { status: 200, headers })
-  } catch {
-    return s3Error("NoSuchKey", "NoSuchKey", 404)
-  }
+  if (!isValidS3Bucket(bucket) || !key) return s3Error("InvalidArgument", "Invalid bucket/key", 400)
+  const path = s3VirtualPath(user, bucket, key)
+  if (!isWithinUserRoot(user, path)) return outOfScope(c)
+  assertCanonicalPath(path)
+  return handleUpload(c.req.raw, c.env as any, { owner: user.id, path }, bucket, key)
 })
 
 // PUT /s3/{bucket}/{key} → PutObject
@@ -278,6 +321,10 @@ s3Router.put("/*", async (c) => {
   }
   const virtualPath = s3VirtualPath(user, bucket, key)
   if (!isWithinUserRoot(user, virtualPath)) return outOfScope(c)
+  if (uploadOperation(c.req.raw, isSigned(c))) {
+    assertCanonicalPath(virtualPath)
+    return handleUpload(c.req.raw, c.env as any, { owner: user.id, path: virtualPath }, bucket, key)
+  }
   // 目录级写判定（对齐 /api/fs/put 的 meta.write_users 与 write_content_bypass）
   const parentDir =
     virtualPath.lastIndexOf("/") > 0
@@ -317,16 +364,21 @@ s3Router.put("/*", async (c) => {
 s3Router.delete("/*", async (c) => {
   const user = await authUser(c)
   if (!user) return s3Error("AccessDenied", "Authentication required", 403)
-  // 删除操作必须持有 DELETE 权限位（管理员放行）。
-  if (!canRemove(user)) {
-    return s3Error("AccessDenied", "Delete permission required", 403)
-  }
   const { bucket, key } = parseS3Path(c)
   if (!isValidS3Bucket(bucket) || !key) {
     return s3Error("InvalidArgument", "Invalid bucket/key", 400)
   }
   const virtualPath = s3VirtualPath(user, bucket, key)
   if (!isWithinUserRoot(user, virtualPath)) return outOfScope(c)
+  if (uploadOperation(c.req.raw, isSigned(c))) {
+    assertCanonicalPath(virtualPath)
+    return handleUpload(c.req.raw, c.env as any, { owner: user.id, path: virtualPath }, bucket, key)
+  }
+  if (isSigned(c)) assertCanonicalPath(virtualPath)
+  // 删除操作必须持有 DELETE 权限位（管理员放行）。
+  if (!canRemove(user)) {
+    return s3Error("AccessDenied", "Delete permission required", 403)
+  }
   // 目录级写判定（对齐 /api/fs/remove 的 meta.write_users）
   if (await metaWriteDenied(c, user, virtualPath)) {
     return s3Error("AccessDenied", "Write permission denied for this path", 403)
