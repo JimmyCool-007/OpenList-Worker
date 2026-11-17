@@ -17,6 +17,7 @@ function googleFileToFileItem(f: GoogleFile): FileItem {
     type: f.mimeType === GOOGLE_DRIVE_FOLDER_MIME ? 1 : 0,
     thumb: f.thumbnailLink || "",
     raw_url: "",
+    hashes: f.md5Checksum ? { md5: f.md5Checksum } : undefined,
   }
 }
 
@@ -27,6 +28,10 @@ export class GoogleDrive implements StorageDriver {
   constructor(addition: GoogleDriveAddition) {
     this.addition = addition
     this.client = new GoogleDriveClient(addition)
+  }
+
+  getUploadClient(): GoogleDriveClient {
+    return this.client
   }
 
   async init(): Promise<void> {
