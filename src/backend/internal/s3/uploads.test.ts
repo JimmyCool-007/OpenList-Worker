@@ -108,6 +108,25 @@ test("SigV4 accepts the full /s3 path and rejects changed query and digest heade
   }), env), { code: "SignatureDoesNotMatch" })
 })
 
+test("SigV4 uses the original Accept-Encoding when Cloudflare rewrites it", async () => {
+  const url = "https://worker.example/s3/drive?delimiter=%2F&list-type=2&prefix="
+  const env = { S3_ACCESS_KEY_ID: "openlist-test", S3_SECRET_ACCESS_KEY: "only-for-test", S3_USER_ID: "7" }
+  const signed = await signS3Headers({
+    method: "GET", url, region: "us-east-1", accessKeyId: env.S3_ACCESS_KEY_ID,
+    secretAccessKey: env.S3_SECRET_ACCESS_KEY, headers: { "accept-encoding": "identity" },
+  })
+  const request = new Request(url, { headers: { ...signed.headers, "accept-encoding": "br, gzip" } })
+
+  assert.equal(await verifyS3Signature(new Request(url, { headers: signed.headers }), env), 7)
+  await assert.rejects(() => verifyS3Signature(request, env), { code: "SignatureDoesNotMatch" })
+
+  Object.defineProperty(request, "cf", { value: { clientAcceptEncoding: "identity" }, configurable: true })
+  assert.equal(await verifyS3Signature(request, env), 7)
+
+  Object.defineProperty(request, "cf", { value: { clientAcceptEncoding: "gzip" } })
+  await assert.rejects(() => verifyS3Signature(request, env), { code: "SignatureDoesNotMatch" })
+})
+
 function fakeServices() {
   const objects = new Map<string, StagedObject>()
   const queue: string[] = []

@@ -36,8 +36,14 @@ export async function verifyS3Signature(request: Request, env: Partial<UploadEnv
       fail("SignatureDoesNotMatch", "Upload checksum and metadata headers must be signed", 403)
     }
   }
+  // Cloudflare rewrites Accept-Encoding and exposes the original value in request metadata.
+  const clientAcceptEncoding = (request as Request & { cf?: { clientAcceptEncoding?: string | null } })
+    .cf?.clientAcceptEncoding
   const headers = names.map((name) => {
-    const value = name === "host" ? url.host : request.headers.get(name)
+    let value = name === "host" ? url.host : request.headers.get(name)
+    if (name === "accept-encoding" && typeof clientAcceptEncoding === "string") {
+      value = clientAcceptEncoding
+    }
     if (value === null) fail("SignatureDoesNotMatch", "Missing signed header", 403)
     return name + ":" + value.trim().replace(/\s+/g, " ") + "\n"
   }).join("")
