@@ -112,6 +112,64 @@ func TestUploadTree(t *testing.T) {
 	}
 }
 
+// The Worker reads JSON properties with JavaScript destructuring, which is
+// case-sensitive. A Go decoder alone would accept both "Path" and "path".
+func TestUploadPlanMatchesWorkerJSONContract(t *testing.T) {
+	want := uploadPlan{
+		ID: "f1b0f4e4-4934-4411-a90d-0ed9e28d835f",
+		Path: "Document/数据集.txt",
+		MD5: strings.Repeat("a", 32),
+		SHA256: strings.Repeat("b", 64),
+		Size: 1024,
+		PartSize: 50 * mib,
+	}
+	payload, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	required := []string{"id", "path", "md5", "sha256", "size", "partSize"}
+	if len(fields) != len(required) {
+		t.Fatalf("unexpected Worker upload JSON fields: %s", payload)
+	}
+	for _, key := range required {
+		if _, ok := fields[key]; !ok {
+			t.Fatalf("missing case-sensitive Worker property %q in %s", key, payload)
+		}
+	}
+	var decodedPath string
+	if err := json.Unmarshal(fields["path"], &decodedPath); err != nil || decodedPath != want.Path {
+		t.Fatalf("incorrect remote path: %q %v", decodedPath, err)
+	}
+	// Existing checkpoints were written with Go's default upper-case keys.
+	// They must remain readable after changing the JSON tags.
+	var old uploadPlan
+	legacy := `{"ID":"f1b0f4e4-4934-4411-a90d-0ed9e28d835f","Path":"Document/数据集.txt","MD5":"` + want.MD5 + `","SHA256":"` + want.SHA256 + `","Size":1024,"PartSize":52428800}`
+	if err := json.Unmarshal([]byte(legacy), &old); err != nil || old != want {
+		t.Fatalf("pre-fix checkpoint not compatible: %+v %v", old, err)
+	}
+}
+
+func TestUploadTreeSingleFileDestination(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "数据 集.txt")
+	if err := os.WriteFile(file, []byte("test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ dest, want string }{
+		{"", "数据 集.txt"},
+		{"Document/", "Document/数据 集.txt"},
+		{"Document/custom.txt", "Document/custom.txt"},
+	} {
+		files, folders, err := uploadTree(file, tc.dest)
+		if err != nil || len(folders) != 0 && tc.dest == "" || len(files) != 1 || files[0].remote != tc.want {
+			t.Fatalf("uploadTree(%q): files=%+v folders=%v err=%v", tc.dest, files, folders, err)
+		}
+	}
+}
+
 func TestMultipart300MiBResumeAndConflict(t *testing.T) {
 	const total = 300 * mib
 	const chunk = 50 * mib
@@ -135,8 +193,21 @@ func TestMultipart300MiBResumeAndConflict(t *testing.T) {
 		p := r.URL.Path
 		switch {
 		case p == "/api/cli/v1/tasks":
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "invalid body", 400)
+				return
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil ||
+				fields["id"] == nil || fields["path"] == nil ||
+				fields["md5"] == nil || fields["sha256"] == nil ||
+				fields["size"] == nil || fields["partSize"] == nil {
+				http.Error(w, "upload payload does not match Worker JSON contract", 400)
+				return
+			}
 			var plan uploadPlan
-			if err := json.NewDecoder(r.Body).Decode(&plan); err != nil || plan.Size != total || plan.PartSize != chunk {
+			if err := json.Unmarshal(data, &plan); err != nil || plan.Size != total || plan.PartSize != chunk {
 				http.Error(w, "invalid plan", 400)
 				return
 			}
