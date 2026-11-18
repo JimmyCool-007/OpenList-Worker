@@ -211,7 +211,7 @@ func uploadFileTask(ctx context.Context, c *client, s session, config string, fi
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err == nil && (!taskIDPattern.MatchString(previous.ID) || previous.PartSize < 5*mib || previous.PartSize > 50*mib) {
+	if err == nil && (!taskIDPattern.MatchString(previous.ID) || previous.PartSize < 5*mib || previous.PartSize > 75*mib) {
 		return errors.New("invalid upload checkpoint")
 	}
 	f, err := openSource(file.local)
