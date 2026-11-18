@@ -4,7 +4,8 @@
 export const R2_HOME_WIDGET_PATH = "/ol-r2-home-widget.js"
 
 export function injectR2HomeWidget(html: string): string {
-  if (!/<\/body\s*>/i.test(html) || html.includes('data-ol-r2-home-widget')) return html
+  if (!html.includes("OPENLIST_CONFIG") || !/<\/body\s*>/i.test(html) ||
+      html.includes('data-ol-r2-home-widget')) return html
   return html.replace(
     /<\/body\s*>/i,
     '<script defer src="' + R2_HOME_WIDGET_PATH + '" data-ol-r2-home-widget></script></body>',
@@ -25,6 +26,7 @@ export const R2_HOME_WIDGET_JAVASCRIPT = String.raw`(() => {
   let widget = null;
   let lastRequest = 0;
   let currentToken = "";
+  let lastQuota = null;
   let inFlight = false;
   let syncPending = false;
 
@@ -88,6 +90,7 @@ export const R2_HOME_WIDGET_JAVASCRIPT = String.raw`(() => {
         credentials: "same-origin"
       });
       if (!response.ok) {
+        lastQuota = null;
         // Access is strictly admin-only. Do not show stale admin data after
         // logout, account downgrade, expiry, or temporary authorization errors.
         removeWidget();
@@ -95,6 +98,7 @@ export const R2_HOME_WIDGET_JAVASCRIPT = String.raw`(() => {
       }
       const result = await response.json();
       if (savedToken !== token() || !onHome()) return;
+      lastQuota = result;
       if (!Number.isSafeInteger(result.auditedAt) || result.auditedAt <= 0) {
         // Avoid claiming a false "9 GB free" while the inventory audit is incomplete.
         const el = mountWidget();
@@ -108,6 +112,7 @@ export const R2_HOME_WIDGET_JAVASCRIPT = String.raw`(() => {
       render(result);
     } catch {
       // Never block normal file browsing due to a quota metrics failure.
+      lastQuota = null;
       removeWidget();
     } finally {
       inFlight = false;
@@ -124,10 +129,12 @@ export const R2_HOME_WIDGET_JAVASCRIPT = String.raw`(() => {
     }
     if (savedToken !== currentToken) {
       removeWidget();
+      lastQuota = null;
       currentToken = savedToken;
       lastRequest = 0;
     }
     if (widget && widget.isConnected) mountWidget();
+    if (!widget && lastQuota && lastQuota.auditedAt > 0) render(lastQuota);
     if (Date.now() - lastRequest >= REFRESH_MS) void refresh();
   }
 
