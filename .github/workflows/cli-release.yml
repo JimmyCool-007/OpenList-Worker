@@ -70,7 +70,7 @@ jobs:
       - run: pnpm lint
       - name: Worker auth, task and compatibility tests
         run: |
-          pnpm exec tsx --test src/backend/server/cli.test.ts src/backend/internal/s3/uploads.test.ts
+          pnpm exec tsx --test src/backend/server/install_cli.test.ts src/backend/server/cli.test.ts src/backend/internal/s3/uploads.test.ts
           pnpm exec tsx --test src/backend/server/webdav_get_sign.test.ts src/backend/server/webdav_propfind.test.ts
 
   release:
