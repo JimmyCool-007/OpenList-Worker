@@ -90,3 +90,37 @@ jobs:
             }
             process.exit(1)
           '
+
+  verify-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify public CLI routes without credentials
+        run: |
+          node --input-type=module -e '
+            const origin = "https://drive.jimmy007.com"
+            const probes = [
+              ["GET", "/api/cli/v1/whoami", "Unauthorized", "Run ol login"],
+              ["GET", "/api/cli/v1/tasks", "Unauthorized", "Run ol login"],
+              ["POST", "/api/cli/v1/login", "InvalidCredentials", "Invalid credentials"]
+            ]
+            let failed = false
+            for (const [method, path, code, message] of probes) {
+              const request = { method, redirect: "manual", signal: AbortSignal.timeout(8000) }
+              if (method === "POST") {
+                request.headers = { "content-type": "application/json" }
+                request.body = "{}"
+              }
+              try {
+                const response = await fetch(origin + path, request)
+                const json = await response.json().catch(() => null)
+                const ok = response.status === 401 && json?.code === code && json?.message === message
+                console.log(method + " " + path + " returned HTTP " + response.status + (ok ? " and the expected ol response" : " with an unexpected response"))
+                failed ||= !ok
+              } catch {
+                console.log(method + " " + path + " could not be reached")
+                failed = true
+              }
+            }
+            if (failed) process.exit(1)
+          '
