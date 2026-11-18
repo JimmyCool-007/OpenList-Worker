@@ -447,6 +447,44 @@ test("five failed Google Drive retries discard only the matching R2 object immed
   assert.equal(ledger.reserved(), 0)
 })
 
+test("verified Drive uploads are never discarded when R2 deletion fails repeatedly", async (t) => {
+  const state = { storage: memoryStorage() }
+  const fake = fakeServices()
+  const ledger = new UploadLedger(state.storage)
+  let clock = Date.now()
+  t.mock.method(Date, "now", () => clock)
+  const job = { ...newJob("/drive/already-verified.bin", 3),
+    state: "verified" as const, size: 3, etag: "etag", version: "v1",
+    driveId: "drive-id", offset: 3 }
+  ledger.insert(job)
+  const key = STAGING_PREFIX + job.id
+  fake.objects.set(key, { key, size: 3, etag: "etag", version: "v1",
+    customMetadata: { openlistUpload: job.id } })
+  const driveFile = { id: "drive-id", name: job.target.name, size: "3",
+    parents: [job.target.parentId], trashed: false,
+    appProperties: { openlistUpload: job.id } }
+  t.mock.method(fake.client, "requestUpload", async (url: string) =>
+    new URL(url).pathname === "/drive/v3/files/drive-id"
+      ? Response.json(driveFile) : Response.json({ files: [driveFile] }))
+  const failedDelete = t.mock.method(fake.env.R2, "delete", async () => {
+    throw new Error("temporary R2 delete failure")
+  })
+  const coordinator = new S3Uploads(state, fake.env, async () => fake.client)
+  const request = calls(coordinator)
+  for (let attempt = 0; attempt < 6; attempt++) {
+    assert.equal((await request("step", { id: job.id })).response.status, 200)
+    clock += 60 * 60_000
+  }
+  assert.equal(ledger.job(job.id)?.state, "verified")
+  assert.ok(fake.objects.has(key), "do not discard the only staged copy on cleanup errors")
+  assert.equal(ledger.reserved(), 3)
+  failedDelete.mock.restore()
+  assert.equal((await request("step", { id: job.id })).response.status, 200)
+  assert.equal(ledger.job(job.id)?.state, "done")
+  assert.equal(fake.objects.has(key), false)
+  assert.equal(ledger.reserved(), 0)
+})
+
 test("Drive retry exhaustion keeps R2 reservation when its identity cannot be verified", async (t) => {
   const state = { storage: memoryStorage() }
   const fake = fakeServices()
