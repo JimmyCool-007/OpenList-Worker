@@ -30,7 +30,7 @@ const usage = "OpenList CLI\n\n" +
 	"  ol login [--server https://drive.jimmy007.com]\n" +
 	"  ol logout | whoami | version | help\n" +
 	"  ol ls [remote-directory]\n" +
-	"  ol upload local-path [--to remote] [--concurrency 3] [--part-size 50MiB]\n" +
+	"  ol upload local-path [--to remote] [--concurrency 3] [--part-size 75MiB]\n" +
 	"  ol download remote-path [--to local] [--concurrency 3]\n" +
 	"  ol status [task-id]\n" +
 	"  ol cancel task-id\n"
@@ -42,7 +42,7 @@ type options struct {
 }
 
 func parseOptions(command string, args []string) (options, error) {
-	o := options{server: defaultServer, concurrency: 3, partSize: 50 * mib}
+	o := options{server: defaultServer, concurrency: 3, partSize: 75 * mib}
 	flags := true
 	for len(args) > 0 {
 		arg := args[0]
@@ -81,8 +81,8 @@ func parseOptions(command string, args []string) (options, error) {
 			o.concurrency = n
 		case name == "--part-size" && command == "upload":
 			n, err := strconv.ParseInt(strings.TrimSuffix(strings.ToLower(value), "mib"), 10, 64)
-			if err != nil || n < 5 || n > 50 {
-				return o, errors.New("part size must be 5–50 MiB. Example: --part-size 25MiB")
+			if err != nil || n < 5 || n > 75 {
+				return o, errors.New("part size must be 5–75 MiB. Example: --part-size 25MiB")
 			}
 			o.partSize = n * mib
 		default:
