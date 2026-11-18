@@ -11,7 +11,7 @@ import { saveDb } from "../model/db"
 import { s3Router } from "../../server/s3"
 import { UploadLedger } from "./ledger"
 import type { LedgerStorage, UploadJob } from "./ledger"
-import { checkedSize, MAX_BUCKET_BYTES, MAX_FILE_SIZE, MiB, S3_CHUNK_SIZE, STAGING_PREFIX } from "./protocol"
+import { checkedSize, CLI_RELEASE_BUDGET, MAX_BUCKET_BYTES, MAX_FILE_SIZE, MiB, S3_CHUNK_SIZE, STAGING_PREFIX } from "./protocol"
 import type { Part, StagedObject, UploadEnv, UploadStatus } from "./protocol"
 import { verifyS3Signature } from "./sigv4"
 
@@ -700,7 +700,7 @@ test("abort releases incomplete multipart reservations and does not touch existi
 test("the coordinator accepts a streamed 75 MiB part and accounts concurrent requests atomically", async () => {
   const state = { storage: memoryStorage() }
   const fake = fakeServices()
-  fake.env.S3_EXTERNAL_MULTIPART_BYTES = String(MAX_BUCKET_BYTES - S3_CHUNK_SIZE)
+  fake.env.S3_EXTERNAL_MULTIPART_BYTES = String(MAX_BUCKET_BYTES - S3_CHUNK_SIZE - CLI_RELEASE_BUDGET)
   const coordinator = new S3Uploads(state, fake.env, async () => fake.client)
   const req = calls(coordinator)
   const args = await Promise.all(["one", "two"].map(async (name) => {
@@ -819,4 +819,30 @@ test("CLI empty PUT replay produces one staging object and rejects cancellation 
   assert.equal(fake.objects.size, 1)
   assert.equal(fake.queue.length, 1)
   assert.equal((await request("cli-cancel", payload)).response.status, 409)
+})
+
+
+test("release objects share the budget, are reserved before audit and survive staging cleanup", async (t) => {
+  const fake = fakeServices()
+  const storage = memoryStorage()
+  const request = calls(new S3Uploads({ storage }, fake.env, async () => fake.client))
+  let clock = Date.now()
+  t.mock.method(Date, "now", () => clock)
+  fake.objects.set("business", { key: "business", size: 20, etag: "e", version: "v1" })
+  let quota = (await request<{externalObjects: number; releaseReserve: number}>("quota", {})).body
+  assert.equal(quota.externalObjects, 20)
+  assert.equal(quota.releaseReserve, CLI_RELEASE_BUDGET)
+  const key = "cli-releases/0.1.5/ol-linux-amd64"
+  fake.objects.set(key, { key, size: 100, etag: "release", version: "v1" })
+  clock += 6 * 60_000
+  quota = (await request<{externalObjects: number; releaseReserve: number}>("quota", {})).body
+  assert.equal(quota.externalObjects, 120)
+  assert.equal(quota.releaseReserve, CLI_RELEASE_BUDGET - 100)
+  const ledger = new UploadLedger(storage)
+  ledger.insert(newJob("/drive/capacity", MAX_BUCKET_BYTES - CLI_RELEASE_BUDGET - 20))
+  assert.equal((await request("release-readiness", {})).response.status, 200)
+  ledger.insert(newJob("/drive/over-capacity", 1))
+  assert.equal((await request("release-readiness", {})).response.status, 503)
+  assert.ok(fake.objects.has(key))
+  assert.ok(fake.objects.has("business"))
 })

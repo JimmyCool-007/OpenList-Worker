@@ -65,7 +65,7 @@ export const R2_HOME_WIDGET_JAVASCRIPT = String.raw`(() => {
 
   function render(quota) {
     const total = quota.limitBytes;
-    const used = quota.reserved + quota.externalObjects + quota.externalMultipart;
+    const used = quota.reserved + quota.externalObjects + quota.externalMultipart + (quota.releaseReserve || 0);
     if (![total, used].every(Number.isFinite) || total <= 0 || used < 0) return;
     const remaining = Math.max(0, total - used);
     const element = mountWidget();

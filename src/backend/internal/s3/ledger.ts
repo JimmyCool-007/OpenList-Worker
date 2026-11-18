@@ -35,7 +35,10 @@ export interface LedgerStorage {
   setAlarm(time: number): Promise<void>
 }
 
-export type Audit = { bytes: number; finished: number; cursor?: string; scanning?: number; started?: number }
+export type Audit = {
+  bytes: number; finished: number; cursor?: string; scanning?: number; started?: number
+  releaseBytes?: number; scanningRelease?: number
+}
 
 const HAS_DESTINATION_LOCK = "state NOT IN ('done','aborted','failed')"
 

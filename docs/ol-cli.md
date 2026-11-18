@@ -10,25 +10,11 @@ export PATH="$HOME/.local/bin:$PATH"
 ol version
 ~~~
 
-`/i`（兼容 `/install.sh`）是 Worker 提供的固定重定向入口：HTTP 302 跳转到本仓库 `main/scripts/install-cli.sh`，因此不需要在 Worker 中重复维护安装脚本。curl 的 `-L` 会跟随重定向；安装脚本和发行二进制仍然托管在 GitHub，安装机器需要能够访问 GitHub。
+`/i` 和 `/install.sh` 由 Worker 直接返回同一份 Bash 脚本，不重定向到 GitHub。脚本只从 `https://drive.jimmy007.com/cli-releases/` 获取最新版本、对应架构二进制和 SHA256SUMS，校验 SHA-256 后才安装。支持 Linux x86_64/AMD64 和 aarch64/ARM64。需要 Bash、curl、sha256sum 和常见系统工具。
 
-如果自定义域名尚未部署或无法访问，仍可直接运行原始 GitHub 安装地址：
+安装会将 PATH 行写入 `~/.bashrc` 和 `~/.zshrc`，重复运行不会重复添加。当前终端不会因子进程自动修改 PATH，可执行上面的 `export` 或重新打开终端。再次运行安装命令可安全更新；若已有文件不是此安装器管理的文件，脚本会停止并要求手动处理。可用 `OL_VERSION=0.1.5 bash install-cli.sh` 安装指定已发布版本。
 
-~~~bash
-curl -fsSL https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh | bash
-~~~
-
-安装脚本从本仓库的 GitHub Release 下载静态二进制和 SHA256SUMS，校验后安装到 ~/.local/bin/ol。需要 Bash、curl 和常见系统工具。若 PATH 缺少 ~/.local/bin，按脚本打印的 export 命令更新当前终端及 shell 启动文件。
-
-需要先检查脚本时，下载正式标签上的脚本再运行。可在 Release 页面核对同一标签的 SHA256SUMS。
-
-~~~bash
-curl --proto '=https' --proto-redir '=https' -fLS \
-  https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/ol-v0.1.3/scripts/install-cli.sh \
-  -o install-cli.sh
-less install-cli.sh
-OL_VERSION=0.1.3 bash install-cli.sh
-~~~
+GitHub Releases 仍保留相同的 Linux 二进制和 SHA256SUMS 作为备用渠道：当自有域名不可用时，可手动从对应 Release 下载所需架构并验证 SHA256SUMS。默认脚本不访问 GitHub。
 
 ## 登录和会话
 
@@ -71,7 +57,7 @@ Multipart 最终提交、等待后台队列及 R2 清理等阶段无法可靠计
 
 登录 OpenList **管理员账号**并访问网盘首页（`/`），在 `Home` 面包屑导航上方显示「R2 暂存剩余」卡片：剩余 GB、9.5 GB 网关预算、已使用/已预留，以及剩余容量进度条，页面可见时每分钟刷新。普通用户、未登录用户不会看到卡片。
 
-数据来自现有管理员专用的 `GET /s3/?openlist-quota` 接口：`9,500,000,000 - reserved - externalObjects - externalMultipart`（不足零按零显示）。未完成首次 R2 对象审计时显示「容量统计中」，不虚构剩余空间。它反映 Worker 的 **9.5 GB 暂存预算**，不是 Cloudflare 账号所有 R2 bucket 的实际可用/剩余额度。网页 UI 不会暴露管理员 JWT；浏览器仅将现有 OpenList 登录凭证发送到同源的管理员接口。
+数据来自现有管理员专用的 `GET /s3/?openlist-quota` 接口：`9,500,000,000 - reserved - externalObjects - externalMultipart - releaseReserve`（不足零按零显示）。未完成首次 R2 对象审计时显示「容量统计中」，不虚构剩余空间。它反映 Worker 的 **9.5 GB 暂存预算**，不是 Cloudflare 账号所有 R2 bucket 的实际可用/剩余额度。网页 UI 不会暴露管理员 JWT；浏览器仅将现有 OpenList 登录凭证发送到同源的管理员接口。`cli-releases/` 在 Bucket 清单中按实际大小计入 externalObjects；为了在两次审计之间保护直接发布的文件，还预留该前缀总量上限 256 MiB 中尚未审计的部分作为 releaseReserve。已审计的发布资产不会重复计数，因此发布资产和保留量合计至少为 256 MiB。
 
 ## 下载
 
@@ -106,4 +92,13 @@ Go 模块只使用标准库，发布使用受支持的 Go 1.27 工具链。
 pnpm exec tsx --test src/backend/server/cli.test.ts src/backend/internal/s3/uploads.test.ts
 ~~~
 
-GitHub Actions 验证 CLI、Worker 和原有 S3/WebDAV 回归，通过后发布 ol-linux-amd64、ol-linux-arm64 和 SHA256SUMS。更新 cli/VERSION 并合并到 main 会触发新版本发布。已有版本的资产保持原样，更新二进制时使用新的版本号。
+GitHub Actions 验证 CLI、Worker、安装和原有 S3/WebDAV 回归。更新 `cli/VERSION` 并合并到 main 会触发发布：GitHub Releases 作为备用；R2 发布任务等待 Worker 已部署且容量预留可用，先向 `data/cli-releases/<版本>/` 写入两个二进制和 SHA256SUMS，逐项从 R2 读回并核对 SHA-256，最后以条件写切换 `cli-releases/latest`。版本化文件不可覆盖，旧版本不能使 latest 倒退；过程失败时不主动删除任何对象。R2 前缀累计不能超过 256 MiB；达到上限须由管理员核对并手动处理旧版本，本流程不会自动删除。
+
+Actions 的 `r2-maintenance` 环境（或仓库级）需要配置 Secrets：
+
+- `CF_ACCOUNT_ID`：Cloudflare 账户 ID。
+- `R2_ACCESS_KEY_ID` 和 `R2_SECRET_ACCESS_KEY`：R2 S3 API 凭证，权限为 **Object Read & Write**，Bucket 限定为 `data`；不需要 Bucket 管理、删除 Bucket 或 Workers 编辑权限。普通 R2 长期凭证的限制粒度是 Bucket 而不是前缀，应妥善保护这组密钥。
+
+发布程序在受信任的 Actions runner 内用长期凭证签发 15 分钟临时凭证，将实际 S3 调用限制为 `data` 的 `cli-releases/` 前缀以及 `ListObjectsV2`、`GetObject`、`PutObject` 操作，不授予删除操作；不将任何凭证传给安装机器或 Worker。PR 的 `r2-preflight` 测试前缀读取和条件写权限：使用不可能匹配的 ETag，预期 R2 返回 412，故不会改写对象。如果环境启用了审批，必须允许该环境作业运行。若凭证缺失，先在 GitHub Settings → Environments → `r2-maintenance` → Secrets 添加，重新运行失败的检查和发布作业。
+
+Worker 的 Git 集成单独负责部署；手动部署才需要 Cloudflare 的 Workers Scripts 编辑权限和现有资源绑定权限。发布作业不修改 Worker、Bucket 或 Durable Object。Worker 更新后、R2 首次发布完成前，新的安装入口会暂时无法下载；因此应先确认预检通过、容量有余量和部署正常，再合并并观察两个发布作业。如果 R2 发布失败，修复原因后重跑该作业；不要将失败当成发布成功。

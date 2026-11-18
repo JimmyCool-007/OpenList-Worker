@@ -15,6 +15,8 @@ import { setEnvCtx } from "./internal/model/db"
 import { embyRouter, subsonicRouter } from "./server/emby"
 import { getStoreConfigErrorDetail } from "./internal/model/store/backend"
 import { storageErrorSummary, uiStorageError } from "./server/storage-error"
+import { INSTALL_CLI_SCRIPT } from "./server/install-cli-content"
+import { uploadCall } from "./internal/s3/protocol"
 
 const app = new Hono()
 
@@ -139,6 +141,7 @@ app.use("*", async (c, next) => {
   const { pathname } = new URL(c.req.url)
   const exempt =
     isStaticOrShell(pathname, c.req.header("accept") || "", c.req.method) ||
+    pathname === "/i" || pathname === "/install.sh" || pathname === "/cli-releases" || pathname.startsWith("/cli-releases/") ||
     isDiagnosticPath(pathname) ||
     // KV 代理传输端点：解析驱动会再探测自身，必须绕开（见 isKvProxyPath）
     isKvProxyPath(pathname)
@@ -196,17 +199,51 @@ for (const path of KV_PROXY_PATHS) {
   )
 }
 
-// Stable custom-domain entry points for installing the standalone ol CLI.
-// curl -fsSL follows the redirect; GitHub still hosts the actual versioned
-// installer and Release assets, so there is no duplicate script to maintain.
-// Register before SPA/ASSETS fallback to avoid returning index.html as a shell script.
+// The generated module is checked against the maintained shell source in CI.
 app.on(["GET", "HEAD"], ["/install.sh", "/i"], (c) => {
-  c.header("Cache-Control", "no-store")
-  c.header("X-Content-Type-Options", "nosniff")
-  return c.redirect(
-    "https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh",
-    302,
-  )
+  return new Response(c.req.method === "HEAD" ? null : INSTALL_CLI_SCRIPT, { status: 200, headers: {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  } })
+})
+
+// Never map arbitrary request paths to R2 keys. This namespace is read-only
+// and exposes only the release pointer and the three explicitly named assets.
+app.all("/cli-releases", (c) => c.body(null, 404, { "Cache-Control": "no-store" }))
+app.all("/cli-releases/*", async (c) => {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    return c.body(null, 405, { Allow: "GET, HEAD", "Cache-Control": "no-store" })
+  }
+  const path = new URL(c.req.url).pathname
+  if (path === "/cli-releases/ready") {
+    try {
+      const env = c.env as any
+      if (!env?.R2 || !env?.S3_UPLOADS) throw new Error("missing bindings")
+      await uploadCall(env, "release-readiness", {})
+      return c.body(null, 204, { "Cache-Control": "no-store" })
+    } catch {
+      return c.body(null, 503, { "Cache-Control": "no-store" })
+    }
+  }
+  if (!/^\/cli-releases\/(?:latest|\d{1,9}\.\d{1,9}\.\d{1,9}\/(?:ol-linux-(?:amd64|arm64)|SHA256SUMS))$/.test(path)) {
+    return c.body(null, 404, { "Cache-Control": "no-store" })
+  }
+  const bucket = (c.env as any)?.R2
+  if (!bucket) return c.body(null, 503, { "Cache-Control": "no-store" })
+  try {
+    const key = path.slice(1)
+    const object = c.req.method === "HEAD" ? await bucket.head(key) : await bucket.get(key)
+    if (!object) return c.body(null, 404, { "Cache-Control": "no-store" })
+    return c.body(c.req.method === "HEAD" ? null : object.body, 200, {
+      "Content-Type": key.endsWith("/latest") || key.endsWith("/SHA256SUMS")
+        ? "text/plain; charset=utf-8" : "application/octet-stream",
+      "Cache-Control": key.endsWith("/latest") ? "no-store" : "public, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
+    })
+  } catch {
+    return c.body(null, 503, { "Cache-Control": "no-store" })
+  }
 })
 
 // Same-origin quota display code, safely isolated from OpenList's upstream SPA.

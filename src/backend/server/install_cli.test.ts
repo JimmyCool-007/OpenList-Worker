@@ -1,51 +1,54 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import { test } from "node:test"
 import app from "../index"
 
-const upstream = "https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh"
+const script = await readFile(new URL("../../../scripts/install-cli.sh", import.meta.url), "utf8")
 
-test("custom-domain /install.sh and /i redirect to the maintained GitHub installer", async () => {
-  let assetFetches = 0
-  const env = {
-    ASSETS: {
-      fetch: async () => {
-        assetFetches++
-        return new Response("<html>SPA fallback</html>", {
-          headers: { "Content-Type": "text/html" },
-        })
-      },
-    },
-  }
-  for (const route of ["/install.sh", "/i"]) {
+test("installer is served directly and exactly from both Worker routes", async () => {
+  let assets = 0
+  const env = { ASSETS: { async fetch() { assets++; return new Response("fallback") } } }
+  for (const path of ["/i", "/install.sh"]) {
     for (const method of ["GET", "HEAD"]) {
-      const response = await app.request("https://drive.jimmy007.com" + route, {
-        method,
-        headers: { accept: "text/html" },
-      }, env)
-      assert.equal(response.status, 302, method + " " + route)
-      assert.equal(response.headers.get("Location"), upstream, method + " " + route)
-      assert.equal(response.headers.get("Cache-Control"), "no-store", method + " " + route)
-      assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff", method + " " + route)
-      assert.notEqual(response.headers.get("Content-Type"), "text/html", method + " " + route)
-      assert.equal(await response.text(), "", method + " " + route)
+      const r = await app.request("https://drive.jimmy007.com" + path, { method }, env)
+      assert.equal(r.status, 200)
+      assert.equal(r.headers.get("location"), null)
+      assert.match(r.headers.get("content-type")!, /^text\/plain/)
+      assert.equal(r.headers.get("cache-control"), "no-store")
+      assert.equal(await r.text(), method === "HEAD" ? "" : script)
     }
   }
-  assert.equal(assetFetches, 0, "the installer must bypass SPA and static assets")
+  assert.equal(assets, 0)
+  assert.doesNotMatch(script, /github\.com|githubusercontent\.com/)
 })
 
-test("installer route is exact and does not intercept the web UI", async () => {
-  const env = {
-    ASSETS: {
-      fetch: async () => new Response("<html>OpenList</html>", {
-        headers: { "Content-Type": "text/html" },
-      }),
-    },
+test("release routes expose only the allowed objects and reject writes", async () => {
+  const keys: string[] = []
+  const bucket = {
+    async get(key: string) { keys.push(key); return { body: new Blob([key]).stream() } },
+    async head(key: string) { keys.push(key); return {} },
   }
-  const page = await app.request("https://drive.jimmy007.com/", {
-    method: "GET",
-    headers: { accept: "text/html" },
-  }, env)
-  assert.equal(page.status, 200)
-  assert.match(await page.text(), /OpenList/)
-  assert.equal(page.headers.get("Location"), null)
+  const env = { R2: bucket, ASSETS: { async fetch() { throw new Error("unexpected assets fallback") } } }
+  for (const suffix of ["latest", "0.1.5/ol-linux-amd64", "0.1.5/ol-linux-arm64", "0.1.5/SHA256SUMS"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const r = await app.request("https://example.com/cli-releases/" + suffix, { method }, env)
+      assert.equal(r.status, 200)
+      assert.equal(await r.text(), method === "GET" ? "cli-releases/" + suffix : "")
+      assert.equal(r.headers.get("x-content-type-options"), "nosniff")
+    }
+  }
+  const initialCount = keys.length
+  for (const suffix of ["x", "0.1.5/secret", "0.1.5/%2e%2e%2fsecret", "%2fsecret", "1.2.3.4/SHA256SUMS", "1.2.3/ol-linux-386", "1.2.3/SHA256SUMS/extra"]) {
+    assert.equal((await app.request("https://example.com/cli-releases/" + suffix, {}, env)).status, 404, suffix)
+  }
+  for (const method of ["PUT", "POST", "DELETE", "PATCH"]) {
+    assert.equal((await app.request("https://example.com/cli-releases/0.1.5/SHA256SUMS", { method }, env)).status, 405)
+  }
+  assert.equal(keys.length, initialCount)
+})
+
+test("missing release assets and coordinator fail closed", async () => {
+  const env = { R2: { async get() { return null }, async head() { return null } } }
+  assert.equal((await app.request("https://example.com/cli-releases/latest", {}, env)).status, 404)
+  assert.equal((await app.request("https://example.com/cli-releases/ready", {}, env)).status, 503)
 })

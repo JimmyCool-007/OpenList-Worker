@@ -4,7 +4,7 @@ import type { LedgerStorage, UploadJob } from "../internal/s3/ledger"
 import { storeEmptyUpload, writeUploadBody } from "../internal/s3/body"
 import type { BodyChecksums } from "../internal/s3/body"
 import {
-  fail, JOB_ID, MAX_BUCKET_BYTES, MAX_FILE_SIZE, MIN_PART_SIZE, S3_CHUNK_SIZE, S3Failure, STAGING_PREFIX,
+  CLI_RELEASE_BUDGET, CLI_RELEASE_PREFIX, fail, JOB_ID, MAX_BUCKET_BYTES, MAX_FILE_SIZE, MIN_PART_SIZE, S3_CHUNK_SIZE, S3Failure, STAGING_PREFIX,
 } from "../internal/s3/protocol"
 import type {
   Manifest, StagedObject, UploadEnv, UploadMetadata, UploadScope, UploadStatus, UploadTarget,
@@ -119,8 +119,16 @@ export class S3Uploads {
             externalObjects: audit.bytes,
             externalMultipart: this.externalMultipart(),
             reserved: this.ledger.reserved(),
+            releaseReserve: this.releaseReserve(audit.releaseBytes),
             auditedAt: audit.finished,
           })
+        }
+        case "/release-readiness": {
+          const external = await this.externalBytes()
+          if (this.ledger.reserved() + external > MAX_BUCKET_BYTES) {
+            fail("ServiceUnavailable", "R2 release capacity is not available", 503)
+          }
+          return Response.json({ ready: true })
         }
       }
       const job = this.owned(params)
@@ -227,19 +235,30 @@ export class S3Uploads {
   }
 
   private async readAuditPage() {
-    const current = this.ledger.audit()
+    let current = this.ledger.audit()
+    // A scan started by an older deployment did not record release bytes.
+    // Restart it without discarding the last completed conservative audit.
+    if (current.started !== undefined && current.scanningRelease === undefined) {
+      current = { bytes: current.bytes, finished: current.finished, releaseBytes: current.releaseBytes }
+    }
     const page = await this.env.R2.list({
       limit: 1000, cursor: current.cursor, include: ["customMetadata"],
     })
     let sum = current.scanning ?? 0
+    let releaseBytes = current.scanningRelease ?? 0
     for (const object of page.objects) {
       const id = object.key.startsWith(STAGING_PREFIX) ? object.key.slice(STAGING_PREFIX.length) : ""
       const job = JOB_ID.test(id) ? this.ledger.job(id) : undefined
       if (!job || !isJobObject(job, object) || job.bytes < object.size) sum += object.size
+      if (object.key.startsWith(CLI_RELEASE_PREFIX)) releaseBytes += object.size
     }
     this.ledger.saveAudit(page.truncated && page.cursor
-      ? { ...current, cursor: page.cursor, scanning: sum, started: current.started ?? Date.now() }
-      : { bytes: sum, finished: Date.now() })
+      ? { ...current, cursor: page.cursor, scanning: sum, scanningRelease: releaseBytes, started: current.started ?? Date.now() }
+      : { bytes: sum, releaseBytes, finished: Date.now() })
+  }
+
+  private releaseReserve(releaseBytes = 0) {
+    return Math.max(0, CLI_RELEASE_BUDGET - releaseBytes)
   }
 
   private async externalBytes() {
@@ -249,7 +268,7 @@ export class S3Uploads {
     if (!audit.finished || Date.now() - audit.finished > AUDIT_MAX_AGE) {
       fail("ServiceUnavailable", "R2 inventory is not current. Retry after it completes.", 503)
     }
-    return Math.max(audit.bytes, audit.scanning ?? 0) + this.externalMultipart()
+    return Math.max(audit.bytes, audit.scanning ?? 0) + this.externalMultipart() + this.releaseReserve(audit.releaseBytes)
   }
 
   private async create(params: Parameters, single: boolean, body: ReadableStream<Uint8Array> | null) {
