@@ -767,3 +767,49 @@ test("a completed R2 object is recovered after a lost response and is never trea
   assert.equal((await calls(coordinator)("abort", args)).response.status, 404)
   assert.ok(fake.objects.has(STAGING_PREFIX + job.id))
 })
+
+test("CLI jobs are idempotent, private by owner and safely cancellable before completion", async () => {
+  const state = { storage: memoryStorage() }
+  const fake = fakeServices()
+  const make = () => calls(new S3Uploads(state, fake.env, async () => fake.client))
+  const payload = newJob("/drive/数据 集.bin")
+  const bytes = new Uint8Array(5 * MiB)
+  const checksum = createHash("md5").update(bytes).digest("hex")
+  const create = {
+    ...payload, metadata: { ...payload.metadata, md5: checksum },
+    cli: { size: bytes.length, partSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") },
+  }
+  const args = { owner: payload.owner, path: payload.path, id: payload.id }
+  let request = make()
+  assert.equal((await request<UploadStatus>("cli-create", create)).body.id, payload.id)
+  assert.equal((await request<UploadStatus>("cli-create", create)).body.state, "open")
+  assert.equal((await request("cli-create", { ...create, cli: { ...create.cli, sha256: "other" } })).response.status, 409)
+  assert.equal((await request("cli-task", { ...args, owner: 99 })).response.status, 404)
+  assert.deepEqual((await request("cli-tasks", { owner: 99, path: "/drive", after: "", limit: 100 })).body, [])
+  const sent = await request<Part>("part", { ...args, number: 1, size: bytes.length, checksums: { md5: checksum } }, bytes)
+  assert.equal(sent.body.etag, checksum)
+  request = make()
+  assert.equal((await request<Part[]>("parts", args)).body[0].etag, checksum)
+  assert.equal((await request("cli-cancel", { ...args, owner: 99 })).response.status, 404)
+  assert.equal((await request<UploadStatus>("cli-cancel", args)).body.state, "aborted")
+  assert.equal((await request("cli-cancel", args)).response.status, 200)
+  assert.equal((await request<{ reserved: number }>("quota", {})).body.reserved, 0)
+  assert.equal(fake.abortCalls(), 1)
+})
+
+test("CLI empty PUT replay produces one staging object and rejects cancellation after staging", async () => {
+  const fake = fakeServices()
+  const request = calls(new S3Uploads({ storage: memoryStorage() }, fake.env, async () => fake.client))
+  const payload = newJob("/drive/空.dat")
+  const create = {
+    ...payload,
+    size: 0,
+    metadata: { ...payload.metadata, md5: createHash("md5").digest("hex") },
+    cli: { size: 0, partSize: 50 * MiB, sha256: createHash("sha256").digest("hex") },
+  }
+  assert.equal((await request<UploadStatus>("cli-create", create)).body.state, "staged")
+  assert.equal((await request<UploadStatus>("cli-create", create)).body.state, "staged")
+  assert.equal(fake.objects.size, 1)
+  assert.equal(fake.queue.length, 1)
+  assert.equal((await request("cli-cancel", payload)).response.status, 409)
+})

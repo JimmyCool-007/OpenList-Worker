@@ -1,0 +1,118 @@
+name: OpenList CLI
+
+on:
+  pull_request:
+    paths:
+      - 'cli/**'
+      - 'src/backend/**'
+      - 'scripts/install-cli.sh'
+      - 'wrangler.jsonc'
+      - '.github/workflows/cli-release.yml'
+  push:
+    branches: [main]
+    paths: ['cli/VERSION']
+    tags: ['ol-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - name: Test and vet
+        working-directory: cli
+        run: |
+          go test -race ./...
+          go vet ./...
+      - name: Build static Linux binaries
+        working-directory: cli
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p ../ol-release
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags="-s -w -X main.version=$version" -o "../ol-release/ol-linux-$arch" .
+            file "../ol-release/ol-linux-$arch"
+            if readelf -l "../ol-release/ol-linux-$arch" | grep -q INTERP; then
+              exit 1
+            fi
+          done
+          cd ../ol-release
+          ./ol-linux-amd64 version | grep -Fx "ol $version"
+          sha256sum ol-linux-amd64 ol-linux-arm64 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - run: bash -n scripts/install-cli.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ol-linux
+          path: ol-release/
+          if-no-files-found: error
+
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - name: Worker auth, task and compatibility tests
+        run: |
+          pnpm exec tsx --test src/backend/server/cli.test.ts src/backend/internal/s3/uploads.test.ts
+          pnpm exec tsx --test src/backend/server/webdav_get_sign.test.ts src/backend/server/webdav_propfind.test.ts
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' || startsWith(github.ref, 'refs/tags/ol-v')
+    needs: [go, worker]
+    runs-on: ubuntu-latest
+    concurrency: ol-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: ol-linux
+          path: ol-release
+      - name: Publish OpenList CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(cat cli/VERSION)
+          tag="ol-v$version"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "Tag must match cli/VERSION" >&2
+            exit 1
+          fi
+          (cd ol-release && sha256sum --check SHA256SUMS)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Existing assets are immutable."
+            exit 0
+          fi
+          gh release create "$tag" ol-release/ol-linux-amd64 ol-release/ol-linux-arm64 ol-release/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "OpenList CLI $version" --generate-notes --latest=false
+
+      - name: Install the public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(cat cli/VERSION)
+          curl --proto '=https' --proto-redir '=https' --retry 6 --retry-all-errors --retry-delay 5 -fLS \
+            'https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh' -o /tmp/install-ol.sh
+          home=$(mktemp -d)
+          HOME="$home" OL_VERSION="$version" bash /tmp/install-ol.sh
+          "$home/.local/bin/ol" version | grep -Fx "ol $version"

@@ -9,6 +9,7 @@ import {
 } from "./server/assets"
 import { webdavRouter } from "./server/webdav"
 import { s3Router } from "./server/s3"
+import { cliRouter } from "./server/cli"
 import { setEnvCtx } from "./internal/model/db"
 import { embyRouter, subsonicRouter } from "./server/emby"
 import { getStoreConfigErrorDetail } from "./internal/model/store/backend"
@@ -166,6 +167,7 @@ for (const path of KV_PROXY_PATHS) {
 // 挂载 API 到 /api
 const api = new Hono()
 setupRouter(api)
+app.route("/api/cli/v1", cliRouter)
 app.route("/api", api)
 
 // Mount specific short paths at root for better compatibility

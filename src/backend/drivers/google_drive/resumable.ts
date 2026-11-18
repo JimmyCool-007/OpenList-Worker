@@ -3,7 +3,7 @@ import type { GoogleDriveClient } from "./util"
 
 const DRIVE = "https://www.googleapis.com/drive/v3"
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3"
-const FIELDS = "id,name,mimeType,size,parents,trashed,md5Checksum,appProperties,capabilities(canAddChildren)"
+const FIELDS = "id,name,mimeType,size,parents,trashed,md5Checksum,sha256Checksum,version,appProperties,capabilities(canAddChildren)"
 
 export class DriveUploadError extends Error {
   constructor(public operation: string, public status: number) {
@@ -19,6 +19,8 @@ export type DriveUploadFile = {
   parents?: string[]
   trashed?: boolean
   md5Checksum?: string
+  sha256Checksum?: string
+  version?: string
   appProperties?: Record<string, string>
   capabilities?: { canAddChildren?: boolean }
 }

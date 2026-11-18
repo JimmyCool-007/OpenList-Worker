@@ -3,6 +3,7 @@ import type { Manifest, Part, UploadMetadata, UploadScope, UploadState, UploadTa
 
 export interface UploadJob extends UploadScope {
   id: string
+  cli?: { size: number; partSize: number; sha256: string }
   target: UploadTarget
   metadata: UploadMetadata
   state: UploadState
@@ -83,6 +84,13 @@ export class UploadLedger {
       "SELECT data FROM s3_jobs WHERE state IN ('open','sealing') AND json_extract(data,'$.owner')=? AND substr(path,1,length(?))=? AND (path>? OR (path=? AND id>?)) ORDER BY path,id LIMIT ?",
       owner, prefix, prefix, after, after, afterId, limit,
     ).map(({ path, id, created }) => ({ path, id, created }))
+  }
+
+  cliTasks(owner: number, root: string, after: string, limit: number) {
+    return this.jobs(
+      "SELECT data FROM s3_jobs WHERE id>? AND (path=? OR substr(path,1,length(?))=?) AND json_extract(data,'$.owner')=? ORDER BY id LIMIT ?",
+      after, root, root + "/", root + "/", owner, limit,
+    )
   }
 
   private destination(job: UploadJob) {

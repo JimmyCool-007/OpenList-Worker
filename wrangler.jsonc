@@ -160,7 +160,13 @@
     }]
   },
   "durable_objects": {
-    "bindings": [{ "name": "S3_UPLOADS", "class_name": "S3Uploads" }]
+    "bindings": [
+      { "name": "S3_UPLOADS", "class_name": "S3Uploads" },
+      { "name": "CLI_STATE", "class_name": "CliState" }
+    ]
   },
-  "migrations": [{ "tag": "s3-uploads-v1", "new_sqlite_classes": ["S3Uploads"] }]
+  "migrations": [
+    { "tag": "s3-uploads-v1", "new_sqlite_classes": ["S3Uploads"] },
+    { "tag": "ol-cli-v1", "new_sqlite_classes": ["CliState"] }
+  ]
 }

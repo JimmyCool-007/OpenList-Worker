@@ -183,3 +183,19 @@ pnpm run deploy:worker
 - 本项目全体贡献者：
 
 [![Contributors](https://contrib.rocks/image?repo=OpenListTeam/OpenList-Worker)](https://github.com/OpenListTeam/OpenList-Worker/graphs/contributors)
+
+## Linux 命令行客户端 `ol`
+
+`ol` 使用 OpenList 账号登录，单台服务器的会话有效期为 30 天。它支持递归上传和下载 Google Drive 数据集，并显示后台转存和校验状态。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh | bash
+ol login
+ol ls
+ol upload ./dataset/
+ol download dataset/ --to /data/
+ol status
+ol logout
+```
+
+客户端安装、会话撤销、断点恢复和 Worker 部署见 [`ol` 使用与部署指南](docs/ol-cli.md)。
