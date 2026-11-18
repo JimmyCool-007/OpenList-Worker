@@ -112,6 +112,59 @@ test("SigV4 accepts the full /s3 path and rejects changed query and digest heade
   }), env), { code: "SignatureDoesNotMatch" })
 })
 
+test("SigV4 supports independent Rclone and s5cmd credentials for the same OpenList user", async () => {
+  const url = "https://worker.example/s3/root/file.bin?list-type=2"
+  const env = {
+    S3_ACCESS_KEY_ID: "rclone-original", S3_SECRET_ACCESS_KEY: "rclone-long-random-secret",
+    S3_S5CMD_ACCESS_KEY_ID: "user-custom-s5cmd", S3_S5CMD_SECRET_ACCESS_KEY: "s5cmd-independent-random-secret",
+    S3_USER_ID: "3",
+  }
+  const makeRequest = async (accessKeyId: string, secretAccessKey: string) => {
+    const signed = await signS3Headers({
+      method: "GET", url, region: "us-east-1", accessKeyId, secretAccessKey,
+    })
+    return new Request(url, { headers: signed.headers })
+  }
+  assert.equal(await verifyS3Signature(
+    await makeRequest(env.S3_ACCESS_KEY_ID, env.S3_SECRET_ACCESS_KEY), env,
+  ), 3)
+  assert.equal(await verifyS3Signature(
+    await makeRequest(env.S3_S5CMD_ACCESS_KEY_ID, env.S3_S5CMD_SECRET_ACCESS_KEY), env,
+  ), 3)
+  await assert.rejects(() => verifyS3Signature(
+    await makeRequest(env.S3_S5CMD_ACCESS_KEY_ID, "wrong-s5cmd-secret"), env,
+  ), { code: "SignatureDoesNotMatch" })
+  await assert.rejects(() => verifyS3Signature(
+    await makeRequest("unknown-client", env.S3_S5CMD_SECRET_ACCESS_KEY), env,
+  ), { code: "AccessDenied" })
+})
+
+test("SigV4 secondary credentials are optional but incomplete or ambiguous credentials are rejected", async () => {
+  const url = "https://worker.example/s3/root/"
+  const signed = await signS3Headers({
+    method: "GET", url, region: "us-east-1",
+    accessKeyId: "new-s5cmd", secretAccessKey: "separate-secret",
+  })
+  const request = new Request(url, { headers: signed.headers })
+  const secondary = {
+    S3_S5CMD_ACCESS_KEY_ID: "new-s5cmd", S3_S5CMD_SECRET_ACCESS_KEY: "separate-secret",
+    S3_USER_ID: "3",
+  }
+  assert.equal(await verifyS3Signature(request, secondary), 3)
+  await assert.rejects(() => verifyS3Signature(request, {
+    S3_S5CMD_ACCESS_KEY_ID: "new-s5cmd", S3_USER_ID: "3",
+  }), { code: "AccessDenied" })
+  await assert.rejects(() => verifyS3Signature(request, {
+    ...secondary, S3_ACCESS_KEY_ID: "new-s5cmd", S3_SECRET_ACCESS_KEY: "old-secret",
+  }), { code: "AccessDenied" })
+  await assert.rejects(() => verifyS3Signature(request, {
+    ...secondary, S3_USER_ID: "0",
+  }), { code: "AccessDenied" })
+  await assert.rejects(() => verifyS3Signature(request, {
+    ...secondary, S3_USER_ID: "abc",
+  }), { code: "AccessDenied" })
+})
+
 test("SigV4 uses the original Accept-Encoding when Cloudflare rewrites it", async () => {
   const url = "https://worker.example/s3/drive?delimiter=%2F&list-type=2&prefix="
   const env = { S3_ACCESS_KEY_ID: "openlist-test", S3_SECRET_ACCESS_KEY: "only-for-test", S3_USER_ID: "7" }
