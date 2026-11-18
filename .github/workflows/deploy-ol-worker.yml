@@ -102,11 +102,13 @@ jobs:
             const probes = [
               ["GET", "/api/cli/v1/whoami", "Unauthorized", "Run ol login"],
               ["GET", "/api/cli/v1/tasks", "Unauthorized", "Run ol login"],
+              ["GET", "/api/cli/v1/whoami", "Unauthorized", "Session expired or revoked. Run ol login", true],
               ["POST", "/api/cli/v1/login", "InvalidCredentials", "Invalid credentials"]
             ]
             let failed = false
-            for (const [method, path, code, message] of probes) {
+            for (const [method, path, code, message, checkSessionStore] of probes) {
               const request = { method, redirect: "manual", signal: AbortSignal.timeout(8000) }
+              if (checkSessionStore) request.headers = { Authorization: "Bearer ol_" + "0".repeat(64) }
               if (method === "POST") {
                 request.headers = { "content-type": "application/json" }
                 request.body = "{}"
@@ -115,7 +117,7 @@ jobs:
                 const response = await fetch(origin + path, request)
                 const json = await response.json().catch(() => null)
                 const ok = response.status === 401 && json?.code === code && json?.message === message
-                console.log(method + " " + path + " returned HTTP " + response.status + (ok ? " and the expected ol response" : " with an unexpected response"))
+                console.log(method + " " + path + (checkSessionStore ? " (session lookup)" : "") + " returned HTTP " + response.status + (ok ? " and the expected ol response" : " with an unexpected response"))
                 failed ||= !ok
               } catch {
                 console.log(method + " " + path + " could not be reached")
