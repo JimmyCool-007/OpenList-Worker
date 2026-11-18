@@ -38,6 +38,17 @@ func progressLine(line string, finish bool) {
 	fmt.Fprintln(os.Stderr, line)
 }
 
+// Clear the live status before reporting errors (which are printed directly
+// by main) or exiting a cancelled transfer.
+func clearProgressLine() {
+	outputMu.Lock()
+	defer outputMu.Unlock()
+	if activeProgressLine {
+		fmt.Fprint(os.Stderr, "\r\x1b[2K")
+		activeProgressLine = false
+	}
+}
+
 // The finalizing and cleanup stages have no measurable percentage. Animate
 // those stages only on a terminal rather than inventing a progress fraction.
 func waitingProgress(label string, frame int) {
