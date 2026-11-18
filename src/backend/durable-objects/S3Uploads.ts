@@ -475,7 +475,10 @@ export class S3Uploads {
           job.error = error instanceof DriveUploadError || error instanceof S3Failure
             ? error.message : "Transfer or verification failed"
           job.next = Date.now() + Math.min(60 * MINUTE, 30_000 * 2 ** (job.attempts - 1))
-          if (job.attempts >= MAX_ATTEMPTS) job.state = "failed"
+          // A verified Drive file already exists. Never reclassify a failed R2
+          // cleanup/verification retry as a failed Drive transfer: keep
+          // retrying final R2 cleanup rather than marking the upload aborted.
+          if (job.attempts >= MAX_ATTEMPTS && job.state !== "verified") job.state = "failed"
           console.warn("[s3-upload] transfer retry", job.id, job.attempts, job.error)
         }
         job.updated = Date.now()
