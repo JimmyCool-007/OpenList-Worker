@@ -164,11 +164,11 @@ for (const path of KV_PROXY_PATHS) {
   )
 }
 
-// Stable custom-domain entry point for installing the standalone ol CLI.
+// Stable custom-domain entry points for installing the standalone ol CLI.
 // curl -fsSL follows the redirect; GitHub still hosts the actual versioned
 // installer and Release assets, so there is no duplicate script to maintain.
 // Register before SPA/ASSETS fallback to avoid returning index.html as a shell script.
-app.on(["GET", "HEAD"], "/install.sh", (c) => {
+app.on(["GET", "HEAD"], ["/install.sh", "/i"], (c) => {
   c.header("Cache-Control", "no-store")
   c.header("X-Content-Type-Options", "nosniff")
   return c.redirect(
