@@ -447,7 +447,7 @@ export async function authUserFromReq(
   }
 }
 
-async function checkUserOtp(matchedUser: any, body: any) {
+export async function checkUserOtp(matchedUser: any, body: any) {
   if (!matchedUser.otp_secret) {
     return { ok: true, code: 200, httpStatus: 200 as const, message: "ok" }
   }

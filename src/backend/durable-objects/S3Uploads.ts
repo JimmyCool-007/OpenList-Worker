@@ -23,6 +23,7 @@ const MAX_ATTEMPTS = 1 + MAX_TRANSFER_RETRIES // initial transfer attempt plus f
 
 type Parameters = UploadScope & {
   id?: string
+  cli?: UploadJob["cli"]
   target?: UploadTarget
   metadata?: UploadMetadata
   size?: number
@@ -38,6 +39,11 @@ type Parameters = UploadScope & {
 function statusOf(job: UploadJob): UploadStatus {
   const { id, state, bytes, size, etag, offset, updated, driveId, metadata, error } = job
   return { id, state, bytes, size, etag, offset, updated, driveId, metadata, error }
+}
+
+function cliStatusOf(job: UploadJob) {
+  const { driveId: _driveId, ...status } = statusOf(job)
+  return { ...status, path: job.path, transferring: !!job.session || job.offset > 0 }
 }
 
 function missingR2Upload(error: unknown) {
@@ -75,6 +81,16 @@ export class S3Uploads {
         case "/create":
         case "/put":
           return Response.json(await this.create(params, action === "/put", encoded ? request.body : null))
+        case "/cli-create":
+          if (!params.cli || !params.id || !JOB_ID.test(params.id)) fail("InvalidRequest", "Invalid upload identity")
+          return Response.json(await this.create(params, params.cli.size === 0, null))
+        case "/cli-tasks":
+          return Response.json(this.ledger.cliTasks(params.owner, params.path, params.after!, params.limit!).map(cliStatusOf))
+        case "/cli-task": {
+          const job = params.id && JOB_ID.test(params.id) ? this.ledger.job(params.id) : undefined
+          if (!job || job.owner !== params.owner) fail("NoSuchUpload", "Upload was not found", 404)
+          return Response.json(cliStatusOf(job))
+        }
         case "/step":
           if (params.id && JOB_ID.test(params.id)) await this.step(params.id)
           return Response.json({ ok: true })
@@ -115,6 +131,15 @@ export class S3Uploads {
           return Response.json(this.ledger.parts(job.id).filter((part) => !part.pending))
         case "/complete":
           return Response.json(await this.exclusive(job.id, 0, () => this.complete(job, params.manifest!, params.expectedSize)))
+        case "/cli-cancel":
+          return Response.json(await this.exclusive(job.id, 0, async () => {
+            if (job.state === "failed" && !job.driveId && !job.session) return this.discardFailed(job.id)
+            if (!["open", "creating", "aborting", "aborted"].includes(job.state)) {
+              fail("CannotCancel", "Upload is committed, transferring, or requires administrator inspection", 409)
+            }
+            await this.abort(job)
+            return cliStatusOf(job)
+          }))
         case "/abort":
           await this.exclusive(job.id, 0, () => this.abort(job))
           return Response.json({ ok: true })
@@ -227,23 +252,43 @@ export class S3Uploads {
   }
 
   private async create(params: Parameters, single: boolean, body: ReadableStream<Uint8Array> | null) {
-    if (this.env.S3_UPLOAD_MODE !== "enabled") fail("ServiceUnavailable", "New staging uploads are paused", 503)
-    const id = crypto.randomUUID()
-    const now = Date.now()
-    const job: UploadJob = {
-      id, owner: params.owner, path: params.path, target: params.target!, metadata: params.metadata!,
-      state: single ? "putting" : "creating", bytes: single ? params.size! : 0,
-      size: single ? params.size : undefined, offset: 0, attempts: 0, next: 0, sent: 0,
-      created: now, updated: now,
-    }
-    const options = {
-      httpMetadata: { contentType: job.metadata.contentType },
-      customMetadata: { openlistUpload: id },
-      storageClass: "Standard",
-    }
+    const id = params.cli ? params.id! : crypto.randomUUID()
     return this.exclusive(id, 0, async () => {
+      const existing = params.cli ? this.ledger.job(id) : undefined
+      if (existing) {
+        if (existing.owner !== params.owner || existing.path !== params.path) {
+          fail("NoSuchUpload", "Upload was not found", 404)
+        }
+        if (existing.cli?.sha256 !== params.cli!.sha256 || existing.cli?.size !== params.cli!.size ||
+            existing.cli?.partSize !== params.cli!.partSize || existing.metadata.md5 !== params.metadata!.md5) {
+          fail("Conflict", "Upload identity belongs to a different file", 409)
+        }
+        if (existing.state === "creating") fail("Retry", "R2 initiation is unresolved. Cancel this task before restarting.", 503)
+        if (existing.state !== "putting") return cliStatusOf(existing)
+        const object = await this.env.R2.head(stagedKey(existing))
+        if (object) {
+          await this.stage(existing, object)
+          return cliStatusOf(existing)
+        }
+      } else if (this.env.S3_UPLOAD_MODE !== "enabled") {
+        fail("ServiceUnavailable", "New staging uploads are paused", 503)
+      }
+      const now = Date.now()
+      const job: UploadJob = existing ?? {
+        id, owner: params.owner, path: params.path,
+        target: params.target ?? await (await import("../internal/s3/target")).resolveUploadTarget(this.env, params),
+        metadata: params.metadata!, cli: params.cli,
+        state: single ? "putting" : "creating", bytes: single ? params.size! : 0,
+        size: single ? params.size : undefined, offset: 0, attempts: 0, next: 0, sent: 0,
+        created: now, updated: now,
+      }
+      const options = {
+        httpMetadata: { contentType: job.metadata.contentType },
+        customMetadata: { openlistUpload: id },
+        storageClass: "Standard",
+      }
       await this.ensureAlarm()
-      this.ledger.insert(job, await this.externalBytes())
+      if (!existing) this.ledger.insert(job, await this.externalBytes())
       await this.state.storage.sync()
       if (single) {
         const key = stagedKey(job)
@@ -268,7 +313,7 @@ export class S3Uploads {
         job.state = "open"
         this.ledger.save(job)
       }
-      return statusOf(job)
+      return params.cli ? cliStatusOf(job) : statusOf(job)
     })
   }
 
@@ -279,6 +324,13 @@ export class S3Uploads {
   private async part(job: UploadJob, params: Parameters, body: ReadableStream<Uint8Array> | null) {
     const number = params.number!
     const size = params.size!
+    if (job.cli) {
+      const { partSize, size: total } = job.cli
+      const remaining = total - (number - 1) * partSize
+      if (remaining <= 0 || size !== Math.min(remaining, partSize)) {
+        fail("InvalidPart", "Part size does not match the upload plan")
+      }
+    }
     if (job.state !== "open") fail("NoSuchUpload", "No open multipart upload", 404)
     return this.exclusive(job.id, number, async () => {
       const previous = this.ledger.reservePart(job.id, number, size, await this.externalBytes())
@@ -380,6 +432,11 @@ export class S3Uploads {
     }
     if (job.etag) return statusOf(job)
     if (job.state === "open") {
+      if (job.cli && (expectedSize !== job.cli.size ||
+          manifest.length !== Math.ceil(job.cli.size / job.cli.partSize) ||
+          manifest.some((part, index) => part.partNumber !== index + 1))) {
+        fail("InvalidPart", "Part list does not match the upload plan")
+      }
       const parts = new Map(this.ledger.parts(job.id).map((part) => [part.partNumber, part]))
       const selected = manifest.map(({ partNumber, etag }) => {
         const part = parts.get(partNumber)

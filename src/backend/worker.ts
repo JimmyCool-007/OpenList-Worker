@@ -1,12 +1,13 @@
 import app from "./index"
 import { OpenListDB } from "./durable-objects/OpenListDB"
 import { S3Uploads } from "./durable-objects/S3Uploads"
+import { CliState } from "./durable-objects/CliState"
 import { JOB_ID, uploadCall } from "./internal/s3/protocol"
 import type { UploadEnv } from "./internal/s3/protocol"
 
 // Durable Object 类（DB_DRIVER=do 时使用），需在 wrangler.toml 声明
 // new_sqlite_classes = ["OpenListDB"] 与对应的 binding。
-export { OpenListDB, S3Uploads }
+export { OpenListDB, S3Uploads, CliState }
 
 export default {
   fetch: app.fetch,
