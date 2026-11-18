@@ -10,12 +10,36 @@ import {
 import { webdavRouter } from "./server/webdav"
 import { s3Router } from "./server/s3"
 import { cliRouter } from "./server/cli"
+import { injectR2HomeWidget, R2_HOME_WIDGET_JAVASCRIPT, R2_HOME_WIDGET_PATH } from "./server/r2-home-widget"
 import { setEnvCtx } from "./internal/model/db"
 import { embyRouter, subsonicRouter } from "./server/emby"
 import { getStoreConfigErrorDetail } from "./internal/model/store/backend"
 import { storageErrorSummary, uiStorageError } from "./server/storage-error"
 
 const app = new Hono()
+
+// Decorate only actual OpenList SPA HTML navigations, never API/file bodies.
+// Keep upstream frontend bundles untouched; the widget is a same-origin module
+// mounted on the Home page by a tiny, independently cacheable script.
+app.use("*", async (c, next) => {
+  await next()
+  if (c.req.method !== "GET" || c.res.status !== 200 ||
+      !c.req.header("accept")?.includes("text/html") ||
+      !c.res.headers.get("content-type")?.includes("text/html")) return
+
+  const pathname = new URL(c.req.url).pathname
+  if (/^\/(api|s3|dav|d|sd|p|@emby|@rest)(?:\/|$)/.test(pathname)) return
+
+  const original = await c.res.text()
+  const patched = injectR2HomeWidget(original)
+  if (patched === original) return
+  const headers = new Headers(c.res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  headers.delete("etag")
+  headers.set("cache-control", "no-cache, must-revalidate")
+  c.res = new Response(patched, { status: c.res.status, headers })
+})
 
 /**
  * 静态资源 / SPA 壳路径：这些请求不应被存储配置错误拦截，
@@ -176,6 +200,14 @@ app.on(["GET", "HEAD"], ["/install.sh", "/i"], (c) => {
     302,
   )
 })
+
+// Same-origin quota display code, safely isolated from OpenList's upstream SPA.
+// No admin credentials or quota values are embedded in the script itself.
+app.get(R2_HOME_WIDGET_PATH, (c) => c.body(R2_HOME_WIDGET_JAVASCRIPT, 200, {
+  "Content-Type": "application/javascript; charset=utf-8",
+  "Cache-Control": "no-cache, must-revalidate",
+  "X-Content-Type-Options": "nosniff",
+}))
 
 // 挂载 API 到 /api
 const api = new Hono()
