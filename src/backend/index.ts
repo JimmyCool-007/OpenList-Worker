@@ -28,7 +28,10 @@ app.use("*", async (c, next) => {
       !c.res.headers.get("content-type")?.includes("text/html")) return
 
   const pathname = new URL(c.req.url).pathname
-  if (/^\/(api|s3|dav|d|sd|p|@emby|@rest)(?:\/|$)/.test(pathname)) return
+  // Built frontend assets already contain the tag, and non-root deep links
+  // retain their original streaming behavior. Runtime patching is needed on
+  // Home and /index.html for CDN-supplied index pages.
+  if (pathname !== "/" && pathname !== "/index.html") return
 
   const original = await c.res.clone().text()
   const patched = injectR2HomeWidget(original)
