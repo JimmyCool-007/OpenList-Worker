@@ -38,7 +38,8 @@ import type { Meta } from "../pkg/meta"
  * 管理后台的 admin 鉴权通道，不是「某个用户」，无法映射到 S3 的对象视图。
  * 需要静态令牌访问的自动化场景请使用 /api/fs/* 接口。
  *
- * URL 结构：/s3/{bucket}/{objectKey}，bucket 是**用户根目录之下**的一级目录。
+ * URL 结构：/s3/{bucket}/{objectKey}，通常 bucket 是用户根目录下的一级目录。
+ * 保留的虚拟 bucket `root` 则直接指向用户根目录，不增加额外层级。
  *
  * 安全不变量（必须长期保持）：
  *   1. 认证用户必须存在且未被禁用（authUserFromReq 已复检 disabled）；
@@ -103,16 +104,18 @@ function isValidS3Bucket(bucket: string): boolean {
 }
 
 /**
- * 把 S3 的 { bucket, key } 映射为**用户根目录之下**的虚拟路径。
+ * 把 S3 的 { bucket, key } 映射为用户根目录中的虚拟路径。
  *
- * base_path 为 "/" 的（默认）用户：`bucket/key` -> `/bucket/key`，与历史行为
- * 完全一致（bucket 即存储挂载点首段），不产生兼容性变化。
- * base_path 受限的用户：`bucket/key` -> `<base_path>/bucket/key`，把 S3 的
- * 「bucket」解释为该用户自己的顶层目录，从而与 /api/fs 的视图保持一致。
+ * `root` 是保留的虚拟 bucket，直接指向用户 base_path：
+ *   base_path=/drive，root/file -> /drive/file，而不是 /drive/root/file。
+ * 其他 bucket 保持原有一级目录映射：Document/file -> /drive/Document/file。
+ * 对 base_path=/ 的用户，root/file -> /file；所有路径仍需经过
+ * isWithinUserRoot、目录 meta 与用户权限校验。
+ * 注意：实体目录名为 root 时，无法通过 S3 bucket `root` 访问该目录。
  */
-function s3VirtualPath(user: any, bucket: string, key: string): string {
+export function s3VirtualPath(user: any, bucket: string, key: string): string {
   const root = getActualPath(user, "/")
-  const segments = [root, bucket, key].filter(Boolean).join("/")
+  const segments = [root, ...(bucket === "root" ? [] : [bucket]), key].filter(Boolean).join("/")
   const normalized = ("/" + segments).replace(/\/{2,}/g, "/")
   return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized
 }
@@ -203,10 +206,11 @@ async function rootS3(c: any): Promise<Response> {
     return Response.json(await uploadCall(c.env, "quota", {}), { headers: { "Cache-Control": "no-store" } })
   }
   try {
-    // 仅列出用户根目录之下的「bucket」——受限 base_path 的用户不应看到整站挂载点
+    // 虚拟 root bucket 始终指向当前用户根目录，而非一个实际子文件夹。
+    // 保留已有子目录 bucket，过滤实体 root 避免重复/冲突。
     const res = await listItems(getActualPath(user, "/"), getCtx(c))
-    const buckets = (res.content || [])
-      .filter((it: any) => it.is_dir)
+    const buckets = [{ name: "root", modified: new Date().toISOString() },
+      ...(res.content || []).filter((it: any) => it.is_dir && it.name !== "root")]
       .map(
         (it: any) =>
           `  <Bucket><Name>${xmlEscape(it.name)}</Name><CreationDate>${xmlEscape(it.modified || new Date().toISOString())}</CreationDate></Bucket>`,
