@@ -131,12 +131,10 @@ test("SigV4 supports independent Rclone and s5cmd credentials for the same OpenL
   assert.equal(await verifyS3Signature(
     await makeRequest(env.S3_S5CMD_ACCESS_KEY_ID, env.S3_S5CMD_SECRET_ACCESS_KEY), env,
   ), 3)
-  await assert.rejects(() => verifyS3Signature(
-    await makeRequest(env.S3_S5CMD_ACCESS_KEY_ID, "wrong-s5cmd-secret"), env,
-  ), { code: "SignatureDoesNotMatch" })
-  await assert.rejects(() => verifyS3Signature(
-    await makeRequest("unknown-client", env.S3_S5CMD_SECRET_ACCESS_KEY), env,
-  ), { code: "AccessDenied" })
+  const wrongSecret = await makeRequest(env.S3_S5CMD_ACCESS_KEY_ID, "wrong-s5cmd-secret")
+  await assert.rejects(() => verifyS3Signature(wrongSecret, env), { code: "SignatureDoesNotMatch" })
+  const unknownClient = await makeRequest("unknown-client", env.S3_S5CMD_SECRET_ACCESS_KEY)
+  await assert.rejects(() => verifyS3Signature(unknownClient, env), { code: "AccessDenied" })
 })
 
 test("SigV4 secondary credentials are optional but incomplete or ambiguous credentials are rejected", async () => {
