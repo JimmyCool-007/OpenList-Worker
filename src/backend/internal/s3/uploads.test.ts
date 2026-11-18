@@ -11,7 +11,7 @@ import { saveDb } from "../model/db"
 import { s3Router } from "../../server/s3"
 import { UploadLedger } from "./ledger"
 import type { LedgerStorage, UploadJob } from "./ledger"
-import { MAX_BUCKET_BYTES, MAX_FILE_SIZE, MiB, S3_CHUNK_SIZE, STAGING_PREFIX } from "./protocol"
+import { checkedSize, MAX_BUCKET_BYTES, MAX_FILE_SIZE, MiB, S3_CHUNK_SIZE, STAGING_PREFIX } from "./protocol"
 import type { Part, StagedObject, UploadEnv, UploadStatus } from "./protocol"
 import { verifyS3Signature } from "./sigv4"
 
@@ -57,7 +57,7 @@ function newJob(path: string, bytes = 0): UploadJob {
   }
 }
 
-test("50 MiB reservations admit 300 MiB, 2 GiB and exactly 5 GB, but reject a byte over 5 GB", () => {
+test("75 MiB reservations admit 300 MiB, 2 GiB and exactly 5 GB, but reject a byte over 5 GB", () => {
   const ledger = new UploadLedger(memoryStorage())
   for (const target of [300 * MiB, 1024 * MiB, 2 * 1024 * MiB, MAX_FILE_SIZE]) {
     const job = newJob("/drive/" + target)
@@ -76,6 +76,13 @@ test("50 MiB reservations admit 300 MiB, 2 GiB and exactly 5 GB, but reject a by
     }
     ledger.closeParts({ ...job, state: "aborted", bytes: 0 })
   }
+})
+
+test("75 MiB request limit accepts legacy 50 MiB and rejects oversized parts", () => {
+  assert.equal(S3_CHUNK_SIZE, 75 * MiB)
+  assert.equal(checkedSize(String(50 * MiB), S3_CHUNK_SIZE), 50 * MiB)
+  assert.equal(checkedSize(String(75 * MiB), S3_CHUNK_SIZE), 75 * MiB)
+  assert.throws(() => checkedSize(String(75 * MiB + 1), S3_CHUNK_SIZE), { code: "EntityTooLarge" })
 })
 
 test("two concurrent uploads share the 9 GB capacity with pre-existing objects and overwrite reservations", () => {
@@ -690,7 +697,7 @@ test("abort releases incomplete multipart reservations and does not touch existi
   assert.ok(fake.objects.has("existing-business-data"))
 })
 
-test("the coordinator accepts a streamed 50 MiB part and accounts concurrent requests atomically", async () => {
+test("the coordinator accepts a streamed 75 MiB part and accounts concurrent requests atomically", async () => {
   const state = { storage: memoryStorage() }
   const fake = fakeServices()
   fake.env.S3_EXTERNAL_MULTIPART_BYTES = String(MAX_BUCKET_BYTES - S3_CHUNK_SIZE)
