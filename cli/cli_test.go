@@ -333,6 +333,59 @@ func TestRecursiveDownloadResumeAndRedirect(t *testing.T) {
 	}
 }
 
+func TestProgressFormattingAndBounds(t *testing.T) {
+	now := time.Now()
+	p := &progress{
+		label: fileLabel("R2", "ol-test-300m.bin"),
+		total: 300 * mib,
+		done: 150 * mib,
+		start: now.Add(-10 * time.Second),
+	}
+	got := p.format(now)
+	for _, expected := range []string{
+		"50%", "150.0 MiB/300.0 MiB", "15.0 MiB/s", "ETA 10s",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("progress output missing %q: %s", expected, got)
+		}
+	}
+	if gotBar := strings.SplitN(strings.SplitN(got, "[", 2)[1], "]", 2)[0]; len([]rune(gotBar)) != progressWidth {
+		t.Fatalf("incorrect progress bar width: %q", gotBar)
+	}
+	p.done = 400 * mib
+	got = p.format(now)
+	if !strings.Contains(got, "100%") || !strings.Contains(got, "300.0 MiB/300.0 MiB") {
+		t.Fatalf("completed progress exceeds total: %q", got)
+	}
+	p.total, p.done, p.base = 0, 0, 0
+	got = p.format(now)
+	if !strings.Contains(got, "100%") || !strings.Contains(got, "0 B/0 B") {
+		t.Fatalf("zero-byte progress is incorrect: %q", got)
+	}
+	p.total, p.done, p.base = 100, 40, 50
+	got = p.format(now)
+	if !strings.Contains(got, "ETA --") || !strings.Contains(got, "0 B/s") {
+		t.Fatalf("negative delta should not report a speed: %q", got)
+	}
+}
+
+func TestProgressNamesAndMultipartStatus(t *testing.T) {
+	name := fileLabel("Drive", strings.Repeat("数据集", 30))
+	short := compactLabel(name)
+	if len([]rune(short)) > 37 || !strings.Contains(short, "…") {
+		t.Fatalf("long progress label was not truncated: %q", short)
+	}
+	if got := compactLabel("R2 test.bin"); got != "R2 test.bin" {
+		t.Fatalf("short label changed: %q", got)
+	}
+	if got := (task{State: "sealing"}).phase(); got != "completing R2 multipart" {
+		t.Fatalf("multipart completion status is unclear: %q", got)
+	}
+	if got := (task{State: "staged", Transferring: true}).phase(); got != "transferring to Google Drive" {
+		t.Fatalf("Drive transfer status incorrect: %q", got)
+	}
+}
+
 func TestUnsafeNamesAndDownloadRange(t *testing.T) {
 	for _, name := range []string{"../escape", "/abs", "a/../b", "dir\\file", "%2f", "x...y", "dir//name"} {
 		if _, err := remotePath(name); err == nil {
