@@ -30,7 +30,7 @@ app.use("*", async (c, next) => {
   const pathname = new URL(c.req.url).pathname
   if (/^\/(api|s3|dav|d|sd|p|@emby|@rest)(?:\/|$)/.test(pathname)) return
 
-  const original = await c.res.text()
+  const original = await c.res.clone().text()
   const patched = injectR2HomeWidget(original)
   if (patched === original) return
   const headers = new Headers(c.res.headers)
