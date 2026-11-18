@@ -170,9 +170,27 @@ func TestUploadTreeSingleFileDestination(t *testing.T) {
 	}
 }
 
+func TestUploadPartSize75MiBAndLegacyResume(t *testing.T) {
+	o, err := parseOptions("upload", []string{"sample.bin"})
+	if err != nil || o.partSize != 75*mib {
+		t.Fatalf("new uploads must default to 75 MiB: %+v %v", o, err)
+	}
+	o, err = parseOptions("upload", []string{"sample.bin", "--part-size", "50MiB"})
+	if err != nil || o.partSize != 50*mib {
+		t.Fatalf("legacy 50 MiB multipart remains supported: %+v %v", o, err)
+	}
+	o, err = parseOptions("upload", []string{"sample.bin", "--part-size", "75MiB"})
+	if err != nil || o.partSize != 75*mib {
+		t.Fatalf("explicit 75 MiB multipart rejected: %+v %v", o, err)
+	}
+	if _, err := parseOptions("upload", []string{"sample.bin", "--part-size", "76MiB"}); err == nil {
+		t.Fatal("part size over the Worker limit was accepted")
+	}
+}
+
 func TestMultipart300MiBResumeAndConflict(t *testing.T) {
 	const total = 300 * mib
-	const chunk = 50 * mib
+	const chunk = 75 * mib
 	path := filepath.Join(t.TempDir(), "测试 300.bin")
 	f, err := os.Create(path)
 	if err != nil {
@@ -245,7 +263,7 @@ func TestMultipart300MiBResumeAndConflict(t *testing.T) {
 				Size  int64
 			}
 			_ = json.NewDecoder(r.Body).Decode(&manifest)
-			if manifest.Size != total || len(manifest.Parts) != 6 || len(committed) != 6 {
+			if manifest.Size != total || len(manifest.Parts) != 4 || len(committed) != 4 {
 				http.Error(w, "bad completion", 400)
 				return
 			}
@@ -270,7 +288,7 @@ func TestMultipart300MiBResumeAndConflict(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(committed) != 6 || requested[1] != 1 || requested[2] != 2 {
+	if len(committed) != 4 || requested[1] != 1 || requested[2] != 2 {
 		t.Fatalf("parts did not resume: %v", requested)
 	}
 }

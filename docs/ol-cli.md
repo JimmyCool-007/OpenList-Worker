@@ -24,10 +24,10 @@ curl -fsSL https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/
 
 ~~~bash
 curl --proto '=https' --proto-redir '=https' -fLS \
-  https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/ol-v0.1.2/scripts/install-cli.sh \
+  https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/ol-v0.1.3/scripts/install-cli.sh \
   -o install-cli.sh
 less install-cli.sh
-OL_VERSION=0.1.2 bash install-cli.sh
+OL_VERSION=0.1.3 bash install-cli.sh
 ~~~
 
 ## 登录和会话
@@ -53,7 +53,7 @@ ol status <task-id>
 ol cancel <task-id>
 ~~~
 
-远程路径相对于 /drive，受限账号以其获准访问的 Drive 子目录为根。带末尾斜杠的 --to 是目标父目录，否则它是准确的目标路径。递归上传保留相对目录，包括空目录。并发范围为 1–8，默认 3。分片大小支持 5–50 MiB，默认 50 MiB。单文件上限为 5,000,000,000 字节。现有 R2 账本管理整个 Bucket 的 9,000,000,000 字节暂存额度。
+远程路径相对于 /drive，受限账号以其获准访问的 Drive 子目录为根。带末尾斜杠的 --to 是目标父目录，否则它是准确的目标路径。递归上传保留相对目录，包括空目录。并发范围为 1–8，默认 3。分片大小支持 5–75 MiB，默认 75 MiB（78,643,200 字节，约 78.6 MB）。旧版本创建的 50 MiB 分片任务和本地断点记录仍可续传。单文件上限为 5,000,000,000 字节。现有 R2 账本管理整个 Bucket 的 9,000,000,000 字节暂存额度。
 
 中断后在同一服务器上重跑原命令。客户端重新计算本地内容哈希，再复用任务清单中大小和 R2 校验值匹配的分片。现有目标只有在 Drive 校验值与本地内容匹配后才会跳过。同名冲突会停止。会话续签后仍可恢复同一用户的本地任务。
 
@@ -66,6 +66,12 @@ R2 上传完成后，由 Worker Queue 继续转存，即使 SSH 关闭也会继�
 Multipart 最终提交、等待后台队列及 R2 清理等阶段无法可靠计算百分比，因此显示动态等待指示而不虚构百分比。只有 Google Drive 验证成功且 R2 清理完成，才会报告任务成功。
 
 在输出被重定向到日志文件、容器无交互终端或 `TERM=dumb` 时，进度改为定期输出普通文本日志，不使用终端控制字符。
+
+## OpenList 首页的 R2 暂存容量
+
+登录 OpenList **管理员账号**并访问网盘首页（`/`），在 `Home` 面包屑导航上方显示「R2 暂存剩余」卡片：剩余 GB、9 GB 网关预算、已使用/已预留，以及剩余容量进度条，页面可见时每分钟刷新。普通用户、未登录用户不会看到卡片。
+
+数据来自现有管理员专用的 `GET /s3/?openlist-quota` 接口：`9,000,000,000 - reserved - externalObjects - externalMultipart`（不足零按零显示）。未完成首次 R2 对象审计时显示「容量统计中」，不虚构剩余空间。它反映 Worker 的 **9 GB 暂存预算**，不是 Cloudflare 账号所有 R2 bucket 的实际可用/剩余额度。网页 UI 不会暴露管理员 JWT；浏览器仅将现有 OpenList 登录凭证发送到同源的管理员接口。
 
 ## 下载
 

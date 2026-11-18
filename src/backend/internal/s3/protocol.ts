@@ -1,5 +1,7 @@
 export const MiB = 1024 * 1024
-export const S3_CHUNK_SIZE = 50 * MiB
+// Inbound Cloudflare requests are capped at 100 MB on common plans. 75 MiB
+// (78,643,200 bytes) leaves headroom while reducing multipart overhead.
+export const S3_CHUNK_SIZE = 75 * MiB
 export const MIN_PART_SIZE = 5 * MiB
 export const MAX_FILE_SIZE = 5_000_000_000
 export const MAX_BUCKET_BYTES = 9_000_000_000

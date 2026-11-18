@@ -108,11 +108,11 @@ export OPENLIST_TEST_S3_SECRET=your-staging-secret
 pnpm exec tsx scripts/test-s3-gateway.mts
 ~~~
 
-自动化测试使用内存 SQLite、模拟 R2 / Queue / Drive。覆盖 300 MiB、1 GiB、2 GiB、5 GB 和 9 GB 边界，实际流式传入 50 MiB，检查并发、取消、重传、幂等、Queue 断流、Drive 已收数据但响应丢失和校验失败保留暂存。使用测试 Worker 跑以上集成测试，再用 Rclone 向专用目录实传 300 MiB 和 2 GiB。需要实测 >5 GB 时，在测试账户用 truncate -s 5000000001 生成专用文件并用同一命令上传；通常会在跨过上限的分片收到 EntityTooLarge。需要实测 9 GB 拒绝时，最好在隔离 bucket 给 S3_EXTERNAL_MULTIPART_BYTES 配置模拟基线 8947571200，同时上传两笔 50 MiB 分片，第一笔可以预留，另一笔应收到 503。这个测试不需要真的写满 9 GB。测试后还原外部预留变量。
+自动化测试使用内存 SQLite、模拟 R2 / Queue / Drive。覆盖 300 MiB、1 GiB、2 GiB、5 GB 和 9 GB 边界，实际流式传入 75 MiB，检查并发、取消、重传、幂等、Queue 断流、Drive 已收数据但响应丢失和校验失败保留暂存。使用测试 Worker 跑以上集成测试，再用 Rclone 向专用目录实传 300 MiB 和 2 GiB。需要实测 >5 GB 时，在测试账户用 truncate -s 5000000001 生成专用文件并用同一命令上传；通常会在跨过上限的分片收到 EntityTooLarge。需要实测 9 GB 拒绝时，最好在隔离 bucket 给 S3_EXTERNAL_MULTIPART_BYTES 配置模拟基线 8947571200，同时上传两笔 50 MiB 分片，第一笔可以预留，另一笔应收到 503。这个测试不需要真的写满 9 GB。测试后还原外部预留变量。
 
 ## 状态、验证和恢复
 
-在以下命令中使用上传者的 OpenList JWT（有目录访问权限），也可以用相同网关用户的 SigV4 签名。路径中的文件名须逐段 URL 编码。Status 也可查指定历史任务，传 &uploadId=UUID。已完成或取消的 HTTP 任务状态保留 7 天。管理员可查询 GET /s3?openlist-quota，查看已审计的外部对象字节数、外部未完成分片预留和暂存预留。
+在以下命令中使用上传者的 OpenList JWT（有目录访问权限），也可以用相同网关用户的 SigV4 签名。路径中的文件名须逐段 URL 编码。Status 也可查指定历史任务，传 &uploadId=UUID。已完成或取消的 HTTP 任务状态保留 7 天。管理员可查询 GET /s3?openlist-quota，查看已审计的外部对象字节数、外部未完成分片预留、暂存预留和网关预算上限；相同数据还显示在登录管理员的网盘首页 Home 导航上方（每分钟刷新）。
 
 ~~~sh
 export OPENLIST_URL=https://drive.jimmy007.com
@@ -150,7 +150,7 @@ curl -fsS -X POST -H "Authorization: Bearer $OPENLIST_ADMIN_JWT" \
 
 ## 容量与计费
 
-- 上限使用十进制，单文件 5,000,000,000 字节，bucket 已有对象加受控暂存预留合计 9,000,000,000 字节。默认上传分片是 52,428,800 字节，支持较小的均匀分片，最后一片可更小。R2 要求非尾片至少 5 MiB 且尺寸相同。标准 CreateMultipartUpload 不传文件总大小，因此超大文件可能收到若干成功分片后才被拒绝。
+- 上限使用十进制，单文件 5,000,000,000 字节，bucket 已有对象加受控暂存预留合计 9,000,000,000 字节。网关允许的最大上传分片是 78,643,200 字节（75 MiB，低于 Cloudflare 常见的 100 MB 入站限制）；新的 ol CLI 默认使用该值，既有 Rclone 示例继续使用 50 MiB，支持较小的均匀分片，最后一片可更小。R2 要求非尾片至少 5 MiB 且尺寸相同。标准 CreateMultipartUpload 不传文件总大小，因此超大文件可能收到若干成功分片后才被拒绝。
 - SQLite Durable Object 在接收 R2 写操作前原子预留已写分片、并行分片及重传分片的字节。成功替换时释放前一个版本的预留。完成后计入已合并对象，验证并删除时释放。外部完整对象通过 R2 目录分页审计纳入预算。只有可核对到任务、版本与字节预留的对象避免重复计数。首次或审计过期时暂停接收预留，等待目录审计完成。
 - R2 Binding 不能枚举外部未完成的 Multipart Upload。其他 Worker、R2 官方 S3 Endpoint、控制台或其他直写入口也不会经过本协调器，审计两次之间对外部对象的变化会滞后。尽量专用 bucket 或停用其他写入。已有外部未完成分片须由运营方额外预留。
 - 9 GB 是网关的字节预算。Cloudflare 另计账户的 GB-month、Class A/B 请求、其他 bucket、存储类型，以及适用的 Workers、Durable Objects 和 Queues 用量。费用与账单上限请以 Cloudflare 账单和使用情况为准。
