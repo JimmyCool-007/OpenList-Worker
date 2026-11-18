@@ -2,11 +2,20 @@
 
 ## 安装
 
-在 Linux AMD64 或 ARM64 上运行：
+在 Linux AMD64 或 ARM64 上，通过自己的 OpenList-Worker 域名安装：
+
+~~~bash
+curl -fsSL https://drive.jimmy007.com/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+ol version
+~~~
+
+`/install.sh` 是 Worker 提供的固定重定向入口：HTTP 302 跳转到本仓库 `main/scripts/install-cli.sh`，因此不需要在 Worker 中重复维护安装脚本。curl 的 `-L` 会跟随重定向；安装脚本和发行二进制仍然托管在 GitHub，安装机器需要能够访问 GitHub。
+
+如果自定义域名尚未部署或无法访问，仍可直接运行原始 GitHub 安装地址：
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh | bash
-ol version
 ~~~
 
 安装脚本从本仓库的 GitHub Release 下载静态二进制和 SHA256SUMS，校验后安装到 ~/.local/bin/ol。需要 Bash、curl 和常见系统工具。若 PATH 缺少 ~/.local/bin，按脚本打印的 export 命令更新当前终端及 shell 启动文件。
