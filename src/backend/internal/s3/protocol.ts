@@ -4,7 +4,7 @@ export const MiB = 1024 * 1024
 export const S3_CHUNK_SIZE = 75 * MiB
 export const MIN_PART_SIZE = 5 * MiB
 export const MAX_FILE_SIZE = 5_000_000_000
-export const MAX_BUCKET_BYTES = 9_000_000_000
+export const MAX_BUCKET_BYTES = 9_500_000_000
 export const STAGING_PREFIX = "__openlist_s3_staging/v1/"
 export const JOB_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 export const XMLNS = ' xmlns="http://s3.amazonaws.com/doc/2006-03-01/"'
