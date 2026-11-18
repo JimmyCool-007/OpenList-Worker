@@ -2,37 +2,55 @@ name: Sync Repo
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     name: Sync Repository
     steps:
+      - name: Check mirror configuration
+        id: config
+        env:
+          GITEE_REPO_URL: ${{ vars.GITEE_REPO_URL }}
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$GITEE_REPO_URL" && -z "$GITEE_SSH_PRIVATE_KEY" ]]; then
+            echo "::warning::Gitee mirror is disabled. Configure GITEE_REPO_URL and GITEE_SSH_PRIVATE_KEY to enable it."
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$GITEE_REPO_URL" || -z "$GITEE_SSH_PRIVATE_KEY" ]]; then
+            echo "::error::Gitee mirroring requires both GITEE_REPO_URL and GITEE_SSH_PRIVATE_KEY."
+            exit 1
+          fi
+          if [[ ! "$GITEE_REPO_URL" =~ ^(git@gitee\.com:|ssh://git@gitee\.com/)[[:alnum:]_.-]+/[[:alnum:]_.-]+$ ]]; then
+            echo "::error::GITEE_REPO_URL must be a Gitee SSH repository URL."
+            exit 1
+          fi
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+
       - name: Checkout
+        if: steps.config.outputs.enabled == 'true'
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.GITEE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan gitee.com >> ~/.ssh/known_hosts
+          persist-credentials: false
 
       - name: Create single commit and push
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          GITEE_REPO_URL: ${{ vars.GITEE_REPO_URL }}
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
         run: |
+          install -d -m 700 ~/.ssh
+          umask 077
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          ssh-keyscan gitee.com >> ~/.ssh/known_hosts
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-
-          # Create a new branch
-          git checkout --orphan new-main
-          git add .
-          git commit -m "Sync from GitHub: $(date)"
-
-          # Add Gitee remote and force push
-          git remote add gitee ${{ vars.GITEE_REPO_URL }}
-          git push --force gitee new-main:main
+          snapshot=$(git commit-tree 'HEAD^{tree}' -m "Sync from GitHub: $GITHUB_SHA")
+          git push --force -- "$GITEE_REPO_URL" "$snapshot:refs/heads/main"
