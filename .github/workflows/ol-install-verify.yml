@@ -1,0 +1,30 @@
+name: Verify published ol installation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ol-install-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Install and execute the published CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main'
+          install_home=$(mktemp -d)
+          trap 'rm -rf -- "$install_home"' EXIT
+          version=$(curl -fsSL "$base/cli/VERSION")
+          curl -fsSL "$base/scripts/install-cli.sh" -o "$install_home/install.sh"
+          uname -m
+          HOME="$install_home" OL_VERSION="$version" bash "$install_home/install.sh"
+          "$install_home/.local/bin/ol" version | grep -Fx "ol $version"
