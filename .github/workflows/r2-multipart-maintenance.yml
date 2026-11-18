@@ -1,0 +1,74 @@
+name: R2 multipart audit and exact abort
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "scan (safe default) or abort"
+        required: true
+        default: scan
+        type: choice
+        options: [scan, abort]
+      key:
+        description: "Exact object key from scan (abort only)"
+        required: false
+        type: string
+      upload_id:
+        description: "Exact Upload ID from scan (abort only)"
+        required: false
+        type: string
+      initiated:
+        description: "Exact initiated timestamp from scan, e.g. 2026-11-01T00:00:00Z"
+        required: false
+        type: string
+      confirm:
+        description: "For abort enter ABORT_EXACT_UPLOAD after checking DO task state"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-multipart-maintenance
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: r2-maintenance
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check boto3==1.35.99
+      - name: Scan or abort exact multipart upload
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'data' }}
+          MODE: ${{ inputs.mode }}
+          OBJECT_KEY: ${{ inputs.key }}
+          UPLOAD_ID: ${{ inputs.upload_id }}
+          INITIATED: ${{ inputs.initiated }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = scan ]; then
+            python scripts/r2-multipart-maintenance.py --mode scan | tee multipart-scan.jsonl
+          else
+            python scripts/r2-multipart-maintenance.py --mode abort \
+              --key "$OBJECT_KEY" --upload-id "$UPLOAD_ID" \
+              --initiated "$INITIATED" --confirm "$CONFIRM"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode == 'scan' }}
+        with:
+          name: r2-multipart-scan
+          path: multipart-scan.jsonl
+          retention-days: 3
