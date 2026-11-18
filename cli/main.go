@@ -125,8 +125,10 @@ type task struct {
 
 func (t task) phase() string {
 	switch t.State {
-	case "creating", "putting", "open", "sealing":
+	case "creating", "putting", "open":
 		return "uploading to R2"
+	case "sealing":
+		return "completing R2 multipart"
 	case "staged":
 		if t.Transferring {
 			return "transferring to Google Drive"
@@ -451,6 +453,10 @@ var outputMu sync.Mutex
 func report(format string, args ...any) {
 	outputMu.Lock()
 	defer outputMu.Unlock()
+	if activeProgressLine {
+		fmt.Fprint(os.Stderr, "\r\x1b[2K")
+		activeProgressLine = false
+	}
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
@@ -458,6 +464,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:]); err != nil {
+		clearProgressLine()
 		if errors.Is(err, io.EOF) {
 			err = errors.New("input ended")
 		}

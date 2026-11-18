@@ -421,11 +421,30 @@ func decodePart(response *http.Response) (remotePart, error) {
 func waitTask(ctx context.Context, c *client, route, remote string, t task) error {
 	last := ""
 	delay := 2 * time.Second
+	var drive *progress
+	driveFinished := false
 	for {
 		phase := t.phase()
 		if phase != last {
 			report("%s  %s  %q", t.ID, phase, remote)
 			last = phase
+		}
+
+		// These are Google Drive bytes reported by the Worker, not bytes
+		// uploaded to R2. Repeated polls never increment the progress.
+		if t.Size > 0 && ((t.State == "staged" && t.Transferring) ||
+			t.State == "verified" || t.State == "done") {
+			if drive == nil {
+				drive = newProgress(fileLabel("Drive", remote), t.Size, t.Offset)
+			}
+			if t.State == "verified" || t.State == "done" {
+				if !driveFinished {
+					drive.set(t.Size, true)
+					driveFinished = true
+				}
+			} else {
+				drive.set(t.Offset, false)
+			}
 		}
 		switch t.State {
 		case "done":
@@ -438,21 +457,45 @@ func waitTask(ctx context.Context, c *client, route, remote string, t task) erro
 		case "failed":
 			return fmt.Errorf("task %s failed: %s", t.ID, t.Error)
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := waitForStatusPoll(ctx, delay, t, remote); err != nil {
+			return err
 		}
 		var next task
 		if err := c.json(ctx, http.MethodGet, route, nil, nil, &next); err != nil {
 			return err
 		}
-		if next.Offset > t.Offset {
-			report("%s  Drive %s / %s", next.ID, byteUnits(next.Offset), byteUnits(next.Size))
-		}
 		t = next
 		delay = min(15*time.Second, delay*2)
+	}
+}
+
+func waitForStatusPoll(ctx context.Context, delay time.Duration, t task, remote string) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	waiting := t.State == "sealing" || t.State == "verified" ||
+		t.State == "aborting" || (t.State == "staged" && !t.Transferring)
+	if !interactiveProgress || !waiting {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	label := fileLabel(t.phase(), remote)
+	waitingProgress(label, 0)
+	frame := 1
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case <-ticker.C:
+			waitingProgress(label, frame)
+			frame++
+		}
 	}
 }
