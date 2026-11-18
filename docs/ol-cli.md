@@ -15,10 +15,10 @@ ol version
 
 ~~~bash
 curl --proto '=https' --proto-redir '=https' -fLS \
-  https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/ol-v0.1.0/scripts/install-cli.sh \
+  https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/ol-v0.1.2/scripts/install-cli.sh \
   -o install-cli.sh
 less install-cli.sh
-OL_VERSION=0.1.0 bash install-cli.sh
+OL_VERSION=0.1.2 bash install-cli.sh
 ~~~
 
 ## 登录和会话
@@ -49,6 +49,14 @@ ol cancel <task-id>
 中断后在同一服务器上重跑原命令。客户端重新计算本地内容哈希，再复用任务清单中大小和 R2 校验值匹配的分片。现有目标只有在 Drive 校验值与本地内容匹配后才会跳过。同名冲突会停止。会话续签后仍可恢复同一用户的本地任务。
 
 R2 上传完成后，由 Worker Queue 继续转存，即使 SSH 关闭也会继续。任务状态区分 R2 上传、排队、Drive 转存、Drive 验证、R2 清理和失败。命令成功退出表示 Drive 已验证且 R2 已清理，或现有文件已通过校验。取消只允许安全的未提交任务或明确无 Drive 提交的失败任务。进入提交或 Drive 转存后，请用状态命令查看进度。服务端历史任务遵循现有账本保留策略，完成和已取消任务通常保留 7 天。
+
+## 传输进度显示
+
+在 SSH 交互终端中，`ol upload` 和 `ol download` 会使用原地刷新的单行进度条，显示百分比、当前字节数、传输速度和预计剩余时间。R2 分片上传与 Google Drive 后台转存分别显示独立进度；Google Drive 进度以 Worker 实际报告的已转存字节数为准，并非 R2 上传进度的延续。
+
+Multipart 最终提交、等待后台队列及 R2 清理等阶段无法可靠计算百分比，因此显示动态等待指示而不虚构百分比。只有 Google Drive 验证成功且 R2 清理完成，才会报告任务成功。
+
+在输出被重定向到日志文件、容器无交互终端或 `TERM=dumb` 时，进度改为定期输出普通文本日志，不使用终端控制字符。
 
 ## 下载
 
