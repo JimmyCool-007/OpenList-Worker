@@ -18,7 +18,8 @@ const AUDIT_INTERVAL = 5 * MINUTE
 const AUDIT_MAX_AGE = 30 * MINUTE
 const REDELIVERY = 5 * MINUTE
 const RETENTION = 7 * DAY
-const MAX_ATTEMPTS = 10
+const MAX_TRANSFER_RETRIES = 5
+const MAX_ATTEMPTS = 1 + MAX_TRANSFER_RETRIES // initial transfer attempt plus five retries
 
 type Parameters = UploadScope & {
   id?: string
@@ -474,12 +475,29 @@ export class S3Uploads {
           job.error = error instanceof DriveUploadError || error instanceof S3Failure
             ? error.message : "Transfer or verification failed"
           job.next = Date.now() + Math.min(60 * MINUTE, 30_000 * 2 ** (job.attempts - 1))
-          if (job.attempts >= MAX_ATTEMPTS) job.state = "failed"
+          // A verified Drive file already exists. Never reclassify a failed R2
+          // cleanup/verification retry as a failed Drive transfer: keep
+          // retrying final R2 cleanup rather than marking the upload aborted.
+          if (job.attempts >= MAX_ATTEMPTS && job.state !== "verified") job.state = "failed"
           console.warn("[s3-upload] transfer retry", job.id, job.attempts, job.error)
         }
         job.updated = Date.now()
         job.sent = 0
         this.ledger.save(job)
+        if (job.state === "failed" && job.attempts >= MAX_ATTEMPTS) {
+          // The operator explicitly opts to discard completed R2 staging after
+          // five failed Drive retries. Reuse the exact-job ownership and
+          // object size/version checks; never release quota if deletion fails.
+          try {
+            await this.discardFailed(job.id)
+            console.info("[s3-upload] discarded staging after five failed Drive retries", job.id)
+          } catch (error) {
+            // Retain the failed job, staged R2 object and reservation so the
+            // periodic failed-retention cleanup can retry safely.
+            console.warn("[s3-upload] Drive retry cleanup deferred", job.id,
+              error instanceof S3Failure ? error.code : "CleanupFailed")
+          }
+        }
         if (job.state === "done") console.info("[s3-upload] verified and removed staging object", job.id)
         if ((job.state === "staged" || job.state === "verified") && !job.next) await this.dispatch(job)
       })
