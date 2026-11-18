@@ -31,8 +31,15 @@ type source struct {
 }
 
 type uploadPlan struct {
-	ID, Path, MD5, SHA256 string
-	Size, PartSize        int64
+	// Match the case-sensitive field names destructured by the Worker CLI API.
+	// These tags also apply to local checkpoints; encoding/json accepts
+	// pre-fix checkpoints with capitalized keys when reading them.
+	ID       string `json:"id"`
+	Path     string `json:"path"`
+	MD5      string `json:"md5"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size"`
+	PartSize int64  `json:"partSize"`
 }
 
 type part struct {
