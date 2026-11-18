@@ -464,6 +464,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:]); err != nil {
+		clearProgressLine()
 		if errors.Is(err, io.EOF) {
 			err = errors.New("input ended")
 		}
