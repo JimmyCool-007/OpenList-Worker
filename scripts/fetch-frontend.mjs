@@ -133,6 +133,7 @@ function replaceDist(src) {
   copyManifestToRoot()
   stampFrontendVersion(src)
   patchManifestCredentials()
+  patchR2HomeWidget()
   console.log(`✓ Frontend dist ready (${DEST})`)
 }
 
@@ -204,6 +205,27 @@ function patchManifestCredentials() {
     console.warn(
       `  [fetch-frontend] patch manifest credentials skipped: ${err?.message || err}`,
     )
+  }
+}
+
+/**
+ * Bake the R2 home widget script tag into the local bundled frontend HTML.
+ * This covers static-first requests that bypass the Worker runtime and
+ * deep-linked SPA routes. Runtime HTML from external CDNs is also patched
+ * by src/backend/index.ts (the insertion is idempotent).
+ */
+function patchR2HomeWidget() {
+  const idx = path.join(DEST, "index.html")
+  const script = '<script defer src="/ol-r2-home-widget.js" data-ol-r2-home-widget></script>'
+  try {
+    if (!fs.existsSync(idx)) return
+    const html = fs.readFileSync(idx, "utf-8")
+    if (html.includes("data-ol-r2-home-widget")) return
+    if (!/<\/body\s*>/i.test(html)) return
+    fs.writeFileSync(idx, html.replace(/<\/body\s*>/i, script + "</body>"))
+    console.log("  Added R2 Home quota widget bootstrap to dist/index.html")
+  } catch (err) {
+    console.warn("  [fetch-frontend] R2 widget bootstrap skipped:", err?.message || err)
   }
 }
 
