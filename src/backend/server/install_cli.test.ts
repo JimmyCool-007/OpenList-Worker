@@ -4,7 +4,7 @@ import app from "../index"
 
 const upstream = "https://raw.githubusercontent.com/JimmyCool-007/OpenList-Worker/main/scripts/install-cli.sh"
 
-test("custom-domain /install.sh redirects to the maintained GitHub installer", async () => {
+test("custom-domain /install.sh and /i redirect to the maintained GitHub installer", async () => {
   let assetFetches = 0
   const env = {
     ASSETS: {
@@ -16,17 +16,19 @@ test("custom-domain /install.sh redirects to the maintained GitHub installer", a
       },
     },
   }
-  for (const method of ["GET", "HEAD"]) {
-    const response = await app.request("https://drive.jimmy007.com/install.sh", {
-      method,
-      headers: { accept: "text/html" },
-    }, env)
-    assert.equal(response.status, 302, method)
-    assert.equal(response.headers.get("Location"), upstream, method)
-    assert.equal(response.headers.get("Cache-Control"), "no-store", method)
-    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff", method)
-    assert.notEqual(response.headers.get("Content-Type"), "text/html", method)
-    assert.equal(await response.text(), "", method)
+  for (const route of ["/install.sh", "/i"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const response = await app.request("https://drive.jimmy007.com" + route, {
+        method,
+        headers: { accept: "text/html" },
+      }, env)
+      assert.equal(response.status, 302, method + " " + route)
+      assert.equal(response.headers.get("Location"), upstream, method + " " + route)
+      assert.equal(response.headers.get("Cache-Control"), "no-store", method + " " + route)
+      assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff", method + " " + route)
+      assert.notEqual(response.headers.get("Content-Type"), "text/html", method + " " + route)
+      assert.equal(await response.text(), "", method + " " + route)
+    }
   }
   assert.equal(assetFetches, 0, "the installer must bypass SPA and static assets")
 })
