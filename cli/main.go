@@ -30,8 +30,8 @@ const usage = "OpenList CLI\n\n" +
 	"  ol login [--server https://drive.jimmy007.com]\n" +
 	"  ol logout | whoami | version | help\n" +
 	"  ol ls [remote-directory]\n" +
-	"  ol upload local-path [--to remote] [--concurrency 3] [--part-size 75MiB]\n" +
-	"  ol download remote-path [--to local] [--concurrency 3]\n" +
+	"  ol upload local-path [--to remote] [--concurrency 4] [--part-size 75MiB]\n" +
+	"  ol download remote-path [--to local] [--concurrency 4]\n" +
 	"  ol status [task-id]\n" +
 	"  ol cancel task-id\n"
 
@@ -42,7 +42,7 @@ type options struct {
 }
 
 func parseOptions(command string, args []string) (options, error) {
-	o := options{server: defaultServer, concurrency: 3, partSize: 75 * mib}
+	o := options{server: defaultServer, concurrency: 4, partSize: 75 * mib}
 	flags := true
 	for len(args) > 0 {
 		arg := args[0]
