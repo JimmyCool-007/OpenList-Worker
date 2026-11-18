@@ -42,6 +42,11 @@ app.use("*", async (c, next) => {
   headers.delete("etag")
   headers.set("cache-control", "no-cache, must-revalidate")
   c.res = new Response(patched, { status: c.res.status, headers })
+  // Hono merges the earlier response headers into c.res when assigning a
+  // replacement, so remove stale validators from the final merged response.
+  c.res.headers.delete("etag")
+  c.res.headers.delete("content-length")
+  c.res.headers.delete("content-encoding")
 })
 
 /**
