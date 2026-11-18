@@ -13,7 +13,7 @@ Rclone 的上传成功表示文件已经完整暂存在 R2。等待任务状态�
 3. SQLite Durable Object 类 S3Uploads、绑定 S3_UPLOADS、迁移 s3-uploads-v1 和 Queue Consumer 由 Wrangler 配置在同一个 Worker 部署。无需创建 D1、新 R2 或新队列。先查看 Dashboard 上已有消费者与迁移记录。如果生产此前有其他迁移，请在当前迁移记录末尾追加此迁移并保留现有绑定。
 4. 在 Bucket data 为前缀 __openlist_s3_staging/v1/ 配置仅取消未完成 Multipart Upload 的生命周期规则，年龄 1 天（86400 秒）。保留已有生命周期规则。该前缀由 Worker 独占，避免其他上传或删除工具访问，也不要设置整对象删除规则。上线前检查已有外部 Multipart；能停写时暂停直接上传，否则设置 S3_EXTERNAL_MULTIPART_BYTES 为外部未完成分片总字节数的保守估算，并保持更新。
 5. 在 OpenList 中确认 /drive 是启用的 Google Drive 驱动，root_folder_id 指向预期目录，Drive OAuth 可以创建文件。保留现有的 refresh_token 和 OAuth 模式。在 Google Drive 用同一挂载账户确认能够写入/列出测试子目录。为 S3 建专用 OpenList 用户，授予 WRITE_CONTENT 和所需目录访问权限，查出用户 ID（例如该用户登录后查询 /api/me 的 data.id）。以本例的 bucket 名称使用时，用户根目录设为 /。如想限制访问范围，可用现有 OpenList 目录 meta 和用户根机制，并相应调整客户端 bucket 名称。JWT_SECRET 和 Drive 凭据继续沿用现有设置。
-6. 通过 Dashboard 保存 S3_ACCESS_KEY_ID 和高熵随机 S3_SECRET_ACCESS_KEY 为 Worker Secrets，S3_USER_ID 为已有用户的数字 ID 字符串。两项 S3 secrets 只用于本网关，不应复用 R2 S3 Access Key。确保 Git 自动生产部署仅从批准的生产分支执行，或把部署步骤设为人工审批。
+6. 通过 Dashboard 保存 S3_ACCESS_KEY_ID 和高熵随机 S3_SECRET_ACCESS_KEY 为 Worker Secrets，S3_USER_ID 为已有用户的数字 ID 字符串。**可选**：再增加 S3_S5CMD_ACCESS_KEY_ID 和 S3_S5CMD_SECRET_ACCESS_KEY 作为第二组独立的 Worker Secrets，由用户自定义值；两项必须同时存在，Key ID 不得与现有 S3_ACCESS_KEY_ID 重复。两组凭据均绑定相同 S3_USER_ID（例如用户 3），而且可以单独轮换，不需要创建额外 OpenList 用户、R2 Bucket 或 Worker。绝不要把真实密钥写入 wrangler.jsonc、示例文件或 Git。两组 S3 secrets 只用于本网关，不应复用 R2 S3 Access Key。确保 Git 自动生产部署仅从批准的生产分支执行，或把部署步骤设为人工审批。
 7. 在批准部署前执行以下检查。完成测试后再部署。生产确认绑定及 consumer 后，在 Dashboard 设普通变量 S3_UPLOAD_MODE=enabled。变量留空时原网关认证行为仍可使用，新的暂存上传还未启用。
 
 ~~~sh
@@ -63,6 +63,32 @@ rclone lsf openlist-s3:root/ -vv
 rclone copy openlist-300MiB.bin openlist-s3:root/ --s3-upload-cutoff 50M --s3-chunk-size 50M --s3-upload-concurrency 4 -P
 rclone copy openlist-2GiB.bin openlist-s3:root/ --s3-upload-cutoff 50M --s3-chunk-size 50M --s3-upload-concurrency 4 -P
 ~~~
+
+## s5cmd：独立 S3 凭据（可选）
+
+在 Cloudflare Dashboard → Workers → openlist-worker → 设置 → 变量和机密中，添加两项 **Secret**：
+`S3_S5CMD_ACCESS_KEY_ID`（自定义 Key ID）与 `S3_S5CMD_SECRET_ACCESS_KEY`（建议至少 32 字节随机密钥，可以本地使用 `openssl rand -hex 32` 生成）。保留已有的 `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY` 和 `S3_USER_ID` 不变。两组 Key ID **必须不同**；少配一项的第二组会被拒绝，原凭据不受影响。
+
+在 s5cmd 运行机器的 `~/.aws/credentials` 中添加独立 profile（不要覆盖 Rclone 的已有凭据）：
+
+~~~ini
+[openlist-s5cmd]
+aws_access_key_id = YOUR_CUSTOM_S5CMD_ACCESS_KEY_ID
+aws_secret_access_key = YOUR_CUSTOM_S5CMD_SECRET_ACCESS_KEY
+~~~
+
+确保 `chmod 600 ~/.aws/credentials`，然后：
+
+~~~sh
+AWS_PROFILE=openlist-s5cmd AWS_REGION=us-east-1 \
+  s5cmd --endpoint-url https://drive.jimmy007.com/s3 ls 's3://root/'
+# 小文件验证后再进行大文件上传测试；Multipart 与 checksum 兼容性需实测。
+AWS_PROFILE=openlist-s5cmd AWS_REGION=us-east-1 \
+  s5cmd --endpoint-url https://drive.jimmy007.com/s3 --numworkers 1 \
+  cp --part-size 50 --concurrency 4 ./test.bin 's3://root/test.bin'
+~~~
+
+通过 `s3://root/` 直接访问当前 OpenList 用户的根目录。s5cmd 的第一次实际上传仍需要验证其 AWS SDK 签名、校验和与本网关的 Multipart 兼容性；Rclone 成功不等于 s5cmd 已被验证。
 
 使用新文件名进行每次验证。Windows PowerShell 可用以下命令生成等大的测试文件。
 
