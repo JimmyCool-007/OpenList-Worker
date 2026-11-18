@@ -188,6 +188,19 @@ func TestUploadPartSize75MiBAndLegacyResume(t *testing.T) {
 	}
 }
 
+func TestTransferConcurrencyDefaultAndOverride(t *testing.T) {
+	for _, command := range []string{"upload", "download"} {
+		o, err := parseOptions(command, []string{"file"})
+		if err != nil || o.concurrency != 4 {
+			t.Fatalf("%s should default to four concurrent transfers: %+v %v", command, o, err)
+		}
+		o, err = parseOptions(command, []string{"file", "--concurrency", "8"})
+		if err != nil || o.concurrency != 8 {
+			t.Fatalf("%s must allow an explicit concurrency override: %+v %v", command, o, err)
+		}
+	}
+}
+
 func TestMultipart300MiBResumeAndConflict(t *testing.T) {
 	const total = 300 * mib
 	const chunk = 75 * mib
