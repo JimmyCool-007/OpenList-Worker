@@ -4,7 +4,7 @@ import type { LedgerStorage, UploadJob } from "../internal/s3/ledger"
 import { storeEmptyUpload, writeUploadBody } from "../internal/s3/body"
 import type { BodyChecksums } from "../internal/s3/body"
 import {
-  fail, JOB_ID, MAX_FILE_SIZE, MIN_PART_SIZE, S3_CHUNK_SIZE, S3Failure, STAGING_PREFIX,
+  fail, JOB_ID, MAX_BUCKET_BYTES, MAX_FILE_SIZE, MIN_PART_SIZE, S3_CHUNK_SIZE, S3Failure, STAGING_PREFIX,
 } from "../internal/s3/protocol"
 import type {
   Manifest, StagedObject, UploadEnv, UploadMetadata, UploadScope, UploadStatus, UploadTarget,
@@ -115,6 +115,7 @@ export class S3Uploads {
           await this.auditPage()
           const audit = this.ledger.audit()
           return Response.json({
+            limitBytes: MAX_BUCKET_BYTES,
             externalObjects: audit.bytes,
             externalMultipart: this.externalMultipart(),
             reserved: this.ledger.reserved(),
