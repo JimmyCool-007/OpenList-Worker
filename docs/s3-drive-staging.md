@@ -1,6 +1,6 @@
 # OpenList S3 上传与 Google Drive 转存
 
-S3 endpoint 是 **https://drive.jimmy007.com/s3**。使用 path-style，OpenList 用户根目录为 / 时，S3 bucket drive 映射到 OpenList 的 /drive 挂载。S3 bucket 名称与 R2 bucket data 无关。现有 Google Drive 驱动负责解析凭据与存储配置。任务把真实 Drive 根 ID、父目录 ID 和文件名固定下来，转存期间会复检用户权限，清理前复检挂载及父目录。
+S3 endpoint 是 **https://drive.jimmy007.com/s3**。使用 path-style。**保留的虚拟 S3 bucket `root` 直接映射到该 OpenList 用户的根目录**：例如用户 `base_path=/drive` 时，`openlist-s3:root/test.bin` 对应 `/drive/test.bin`，不会额外创建 `root` 子目录。其他 bucket 仍映射到用户根目录下的同名子文件夹：`openlist-s3:Document/test.bin` 对应 `/drive/Document/test.bin`。用户 `base_path=/` 时，`root/test.bin` 对应 OpenList 虚拟 `/test.bin`。现有真实 `root` 子目录在 S3 中被这个保留名称遮蔽，其他入口不受影响。S3 bucket 名称与 R2 bucket `data` 无关。现有 Google Drive 驱动负责解析凭据与存储配置。任务把真实 Drive 根 ID、父目录 ID 和文件名固定下来，转存期间会复检用户权限，清理前复检挂载及父目录。
 
 Rclone 的上传成功表示文件已经完整暂存在 R2。等待任务状态变成 done 后，Drive 文件才进入可下载状态。暂存期间 HEAD 会向同一上传者报告已暂存文件的大小及 ETag。列表与下载继续通过 OpenList 的现有 Drive 路径，原有 WebDAV 地址、认证与传输方式不变。
 
@@ -59,8 +59,9 @@ use_multipart_etag=false 避免在暂存完成与转存完成之间，把 R2 分
 ~~~sh
 truncate -s 300M openlist-300MiB.bin
 truncate -s 2G openlist-2GiB.bin
-rclone copy openlist-300MiB.bin openlist-s3:drive/ --s3-upload-cutoff 50M --s3-chunk-size 50M --s3-upload-concurrency 4 -P
-rclone copy openlist-2GiB.bin openlist-s3:drive/ --s3-upload-cutoff 50M --s3-chunk-size 50M --s3-upload-concurrency 4 -P
+rclone lsf openlist-s3:root/ -vv
+rclone copy openlist-300MiB.bin openlist-s3:root/ --s3-upload-cutoff 50M --s3-chunk-size 50M --s3-upload-concurrency 4 -P
+rclone copy openlist-2GiB.bin openlist-s3:root/ --s3-upload-cutoff 50M --s3-chunk-size 50M --s3-upload-concurrency 4 -P
 ~~~
 
 使用新文件名进行每次验证。Windows PowerShell 可用以下命令生成等大的测试文件。
@@ -89,7 +90,7 @@ pnpm exec tsx scripts/test-s3-gateway.mts
 
 ~~~sh
 export OPENLIST_URL=https://drive.jimmy007.com
-curl -fsS -H "Authorization: Bearer $OPENLIST_JWT" "$OPENLIST_URL/s3/drive/openlist-300MiB.bin?openlist-status"
+curl -fsS -H "Authorization: Bearer $OPENLIST_JWT" "$OPENLIST_URL/s3/root/openlist-300MiB.bin?openlist-status"
 curl -fsS -H "Authorization: Bearer $OPENLIST_ADMIN_JWT" "$OPENLIST_URL/s3?openlist-quota"
 ~~~
 
