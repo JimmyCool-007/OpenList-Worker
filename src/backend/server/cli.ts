@@ -45,8 +45,8 @@ function staging(c: Context) {
 cliRouter.get("/stat", async c => {
   const { user } = await currentCliUser(c)
   const path = cliPath(user, c.req.query("path") ?? "")
-  await authorizeCliPath(c.env, user, path)
-  return c.json(await cliStat(c.env, path))
+  await authorizeCliPath(c.env as CliEnv, user, path)
+  return c.json(await cliStat(c.env as CliEnv, path))
 })
 
 cliRouter.get("/list", async c => {
@@ -54,24 +54,24 @@ cliRouter.get("/list", async c => {
   const path = cliPath(user, c.req.query("path") ?? "")
   const cursor = c.req.query("cursor") ?? ""
   if (cursor.length > 4096) fail("InvalidCursor", "Invalid cursor", 400)
-  await authorizeCliPath(c.env, user, path)
-  return c.json(await cliList(c.env, user, path, cursor))
+  await authorizeCliPath(c.env as CliEnv, user, path)
+  return c.json(await cliList(c.env as CliEnv, user, path, cursor))
 })
 
 cliRouter.post("/mkdir", async c => {
   const { user } = await currentCliUser(c)
   const data = await cliJson(c.req.raw, 24 * 1024)
   const path = cliPath(user, data.path)
-  await authorizeCliPath(c.env, user, path, true)
-  await ensureCliFolder(c.env, path)
+  await authorizeCliPath(c.env as CliEnv, user, path, true)
+  await ensureCliFolder(c.env as CliEnv, path)
   return c.body(null, 204)
 })
 
 cliRouter.get("/download", async c => {
   const { user } = await currentCliUser(c)
   const path = cliPath(user, c.req.query("path") ?? "")
-  await authorizeCliPath(c.env, user, path)
-  return cliDownload(c.env, path, c.req.raw)
+  await authorizeCliPath(c.env as CliEnv, user, path)
+  return cliDownload(c.env as CliEnv, path, c.req.raw)
 })
 
 function publicTask(task: Task, root: string) {
