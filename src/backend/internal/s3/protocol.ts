@@ -103,6 +103,9 @@ export interface UploadEnv {
   S3_UPLOAD_MODE?: string
   S3_ACCESS_KEY_ID?: string
   S3_SECRET_ACCESS_KEY?: string
+  /** Optional second SigV4 credential pair; maps to the same S3_USER_ID. */
+  S3_S5CMD_ACCESS_KEY_ID?: string
+  S3_S5CMD_SECRET_ACCESS_KEY?: string
   S3_USER_ID?: string
   S3_EXTERNAL_MULTIPART_BYTES?: string
   S3_FAILED_RETENTION_HOURS?: string

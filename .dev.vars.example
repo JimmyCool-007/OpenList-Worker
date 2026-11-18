@@ -100,3 +100,12 @@ CF_API_KEY=
 # 目录列表与下载直链每次都直接回源驱动，既不做跨请求缓存，也不合并并发相同
 # 调用。相关环境变量（CACHE_* / SINGLEFLIGHT*）已全部删除，残留同名变量不会
 # 再被读取。
+
+# ── OpenList S3 s5cmd 独立凭据（可选） ─────────────────────────────────────────
+# 第二组 SigV4 凭据，供 s5cmd 使用；不改变原 Rclone S3_ACCESS_KEY_ID /
+# S3_SECRET_ACCESS_KEY。必须两项同时配置，Access Key ID 不能和主凭据相同。
+# 两组凭据都映射到现有 S3_USER_ID 指定的 OpenList 用户。
+# 请在 Cloudflare Worker 的「变量和机密」中以 Secret 类型设置实际值；
+# 切勿把实际密钥提交到 Git。
+S3_S5CMD_ACCESS_KEY_ID=
+S3_S5CMD_SECRET_ACCESS_KEY=

@@ -13,10 +13,17 @@ export async function verifyS3Signature(request: Request, env: Partial<UploadEnv
   const auth = request.headers.get("authorization") ?? ""
   const match = /^AWS4-HMAC-SHA256 Credential=([^/,\s]+)\/(\d{8})\/([a-z0-9-]+)\/s3\/aws4_request,\s*SignedHeaders=([a-z0-9;-]+),\s*Signature=([a-f0-9]{64})$/.exec(auth)
   const userId = Number(env.S3_USER_ID)
-  if (!match || !env.S3_ACCESS_KEY_ID || !env.S3_SECRET_ACCESS_KEY ||
-      match[1] !== env.S3_ACCESS_KEY_ID || !Number.isSafeInteger(userId) || userId <= 0) {
+  // Both credential pairs map to the same existing OpenList user. Match the
+  // incoming Access Key ID to exactly one *complete* configured pair.
+  // Duplicated IDs are ambiguous and must fail closed, not pick a secret.
+  const primary = !!env.S3_ACCESS_KEY_ID && !!env.S3_SECRET_ACCESS_KEY &&
+    match?.[1] === env.S3_ACCESS_KEY_ID
+  const secondary = !!env.S3_S5CMD_ACCESS_KEY_ID && !!env.S3_S5CMD_SECRET_ACCESS_KEY &&
+    match?.[1] === env.S3_S5CMD_ACCESS_KEY_ID
+  if (!match || primary === secondary || !Number.isSafeInteger(userId) || userId <= 0) {
     fail("AccessDenied", "Invalid S3 credentials", 403)
   }
+  const secret = primary ? env.S3_SECRET_ACCESS_KEY! : env.S3_S5CMD_SECRET_ACCESS_KEY!
   const [, , day, region, signed, signature] = match
   const date = request.headers.get("x-amz-date") ?? ""
   const timestamp = date.replace(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/, "$1-$2-$3T$4:$5:$6Z")
@@ -61,7 +68,7 @@ export async function verifyS3Signature(request: Request, env: Partial<UploadEnv
   const scope = [day, region, "s3", "aws4_request"].join("/")
   const toSign = ["AWS4-HMAC-SHA256", date, scope, await sha256Hex(canonical)].join("\n")
   const expected = await hmacSha256Hex(
-    await getSigningKey(env.S3_SECRET_ACCESS_KEY, day, region, "s3"), toSign,
+    await getSigningKey(secret, day, region, "s3"), toSign,
   )
   let difference = 0
   for (let i = 0; i < expected.length; i++) difference |= expected.charCodeAt(i) ^ signature.charCodeAt(i)
