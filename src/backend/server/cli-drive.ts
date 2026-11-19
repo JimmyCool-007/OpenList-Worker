@@ -156,6 +156,22 @@ export async function ensureCliFolder(env: CliEnv, path: string) {
   }
 }
 
+// Accept only one explicitly bounded range (parallel CLI parts) or the legacy
+// open-ended resume range. Never forward malformed, multi-range, or
+// out-of-bounds requests to Google Drive.
+export function parseCliDownloadRange(raw: string | null, size: number) {
+  if (raw === null) return { range: null, bounded: false, start: 0, end: size - 1 }
+  const match = /^bytes=(0|[1-9]\d*)-(?:(0|[1-9]\d*))?$/.exec(raw)
+  if (!match) fail("InvalidRange", "Unsupported byte range", 416)
+  const start = Number(match[1])
+  const end = match[2] === undefined ? size - 1 : Number(match[2])
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+      start >= size || end >= size || end < start) {
+    fail("InvalidRange", "Byte range is outside the file", 416)
+  }
+  return { range: raw, bounded: match[2] !== undefined, start, end }
+}
+
 export async function cliDownload(env: CliEnv, path: string, request: Request) {
   const { client, physical } = await context(env, path)
   const file = await findItem(client, physical)
@@ -166,9 +182,8 @@ export async function cliDownload(env: CliEnv, path: string, request: Request) {
   }
   const expected = request.headers.get("x-ol-version")
   if (expected !== entry.version) fail("Changed", "Drive file changed. Restart the download.", 412)
-  const range = request.headers.get("range")
-  if (range && !/^bytes=\d+-$/.test(range)) fail("InvalidRange", "Unsupported byte range", 416)
-  const headers = new Headers(range ? { range } : undefined)
+  const downloadRange = parseCliDownloadRange(request.headers.get("range"), entry.size)
+  const headers = new Headers(downloadRange.range ? { range: downloadRange.range } : undefined)
   let url = client.getDownloadUrl(file.id)
   let res = await client.requestUpload(url, { headers, signal: request.signal })
   for (let i = 0; res.status >= 300 && res.status < 400 && i < 4; i++) {
@@ -187,6 +202,20 @@ export async function cliDownload(env: CliEnv, path: string, request: Request) {
   if (res.status !== 200 && res.status !== 206) {
     await res.body?.cancel()
     fail("DriveUnavailable", "Drive could not serve this file or range", res.status === 416 ? 416 : 502)
+  }
+  if (downloadRange.bounded) {
+    if (res.status === 200) {
+      await res.body?.cancel()
+      fail("RangeUnsupported", "Google Drive did not honor a bounded byte range", 501)
+    }
+    const expected = "bytes " + downloadRange.start + "-" + downloadRange.end + "/" + entry.size
+    const length = downloadRange.end - downloadRange.start + 1
+    const actualLength = res.headers.get("content-length")
+    if (res.status !== 206 || res.headers.get("content-range") !== expected ||
+        (actualLength !== null && actualLength !== String(length))) {
+      await res.body?.cancel()
+      fail("DriveUnavailable", "Google Drive returned an inconsistent byte range", 502)
+    }
   }
   const output = new Headers({ "content-type": "application/octet-stream", "cache-control": "private, no-store" })
   for (const name of ["content-length", "content-range", "accept-ranges"]) {
