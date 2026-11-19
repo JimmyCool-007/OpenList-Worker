@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// A batch holds at most 4 * 16 MiB in memory with default concurrency.
+// A batch holds up to 4 * 75 MiB in memory with default concurrency.
 // Ranges are downloaded concurrently but appended to the partial file only
 // after every range in the batch is verified, preserving a contiguous prefix
 // that the existing resume logic can safely reuse after a crash.
-const downloadPartSize int64 = 16 << 20
+const downloadPartSize int64 = 75 << 20
 
 var errBoundedRangesUnavailable = errors.New("bounded download ranges unavailable")
 
@@ -120,14 +120,22 @@ func fetchBounded(ctx context.Context, c *client, item downloadItem, part downlo
 			progress.add(int64(n))
 		}
 	}}
-	data, err := io.ReadAll(r)
-	if err != nil {
+	// Allocate exactly one 75 MiB part rather than letting io.ReadAll grow
+	// buffers geometrically. Four parallel parts therefore use about 300 MiB
+	// of data buffers instead of potentially much more.
+	data := make([]byte, expectedLength)
+	if _, err := io.ReadFull(r, data); err != nil {
 		if requestCtx.Err() != nil && ctx.Err() == nil {
 			return nil, networkError{timeout: true}
 		}
-		return nil, err
+		return nil, fmt.Errorf("%w: incomplete bounded download part", io.ErrUnexpectedEOF)
 	}
-	if int64(len(data)) != expectedLength {
+	var extra [1]byte
+	n, err := r.Read(extra[:])
+	if n != 0 || err != io.EOF {
+		if requestCtx.Err() != nil && ctx.Err() == nil {
+			return nil, networkError{timeout: true}
+		}
 		return nil, fmt.Errorf("%w: bounded download part size mismatch", io.ErrUnexpectedEOF)
 	}
 	return data, nil
