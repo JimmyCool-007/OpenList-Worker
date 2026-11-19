@@ -182,21 +182,10 @@ func fetchFile(ctx context.Context, c *client, s session, config string, root *o
 			}
 			offset = 0
 		}
+		// A single file always uses one continuous HTTP stream. The shared
+		// semaphore still limits parallel downloads across a directory.
 		if offset < n || n == 0 {
-			if concurrency > 1 && n-offset >= 2*downloadPartSize {
-				err = fetchParallel(ctx, c, f, item, offset, n, concurrency, slots)
-				if errors.Is(err, errBoundedRangesUnavailable) {
-					report("Bounded Range unavailable for %q; falling back to single connection", item.remote)
-					offset, err = f.Seek(0, io.SeekEnd)
-					if err != nil {
-						return err
-					}
-					err = fetchRange(ctx, c, f, item, offset, n, slots)
-				}
-			} else {
-				err = fetchRange(ctx, c, f, item, offset, n, slots)
-			}
-			if err != nil {
+			if err := fetchRange(ctx, c, f, item, offset, n, slots); err != nil {
 				return err
 			}
 		}
