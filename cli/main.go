@@ -31,7 +31,7 @@ const usage = "OpenList CLI\n\n" +
 	"  ol logout | whoami | version | help\n" +
 	"  ol ls [remote-directory]\n" +
 	"  ol upload local-path [--to remote] [--concurrency 4] [--part-size 75MiB]\n" +
-	"  ol download remote-path [--to local] [--concurrency 4]\n" +
+	"  ol download remote-path [--to local] [--concurrency 4] [--parallel-parts]\n" +
 	"  ol status [task-id]\n" +
 	"  ol cancel task-id\n"
 
@@ -39,6 +39,7 @@ type options struct {
 	arg, to, server string
 	concurrency     int
 	partSize        int64
+	parallelParts   bool // optional bounded Range download; default off
 }
 
 func parseOptions(command string, args []string) (options, error) {
@@ -56,6 +57,10 @@ func parseOptions(command string, args []string) (options, error) {
 				return o, errors.New("expected one path or task ID")
 			}
 			o.arg = arg
+			continue
+		}
+		if arg == "--parallel-parts" && command == "download" {
+			o.parallelParts = true
 			continue
 		}
 		name, value, assigned := strings.Cut(arg, "=")
