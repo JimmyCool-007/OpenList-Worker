@@ -56,8 +56,9 @@ func download(ctx context.Context, c *client, s session, config string, o option
 	defer root.Close()
 
 	initial := downloadItem{remote, filepath.Base(dest), remoteEntry}
+	slots := make(chan struct{}, o.concurrency)
 	if !remoteEntry.IsDir {
-		return downloadFile(ctx, c, s, config, root, initial)
+		return downloadFile(ctx, c, s, config, root, initial, slots, o.concurrency)
 	}
 	var files []downloadItem
 	var folders []string
@@ -89,7 +90,7 @@ func download(ctx context.Context, c *client, s session, config string, o option
 		}
 	}
 	return parallel(ctx, o.concurrency, files, func(ctx context.Context, item downloadItem) error {
-		return downloadFile(ctx, c, s, config, sub, item)
+		return downloadFile(ctx, c, s, config, sub, item, slots, o.concurrency)
 	})
 }
 
@@ -121,14 +122,14 @@ func downloadTree(ctx context.Context, c *client, dir downloadItem, files *[]dow
 	return nil
 }
 
-func downloadFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem) error {
-	if err := fetchFile(ctx, c, s, config, root, item); err != nil {
+func downloadFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem, slots chan struct{}, concurrency int) error {
+	if err := fetchFile(ctx, c, s, config, root, item, slots, concurrency); err != nil {
 		return fmt.Errorf("download %q: %w", item.remote, err)
 	}
 	return nil
 }
 
-func fetchFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem) error {
+func fetchFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem, slots chan struct{}, concurrency int) error {
 	e := item.entry
 	if e.Size == nil || *e.Size < 0 || e.Version == "" {
 		return errors.New("Drive does not expose downloadable file metadata")
@@ -181,7 +182,20 @@ func fetchFile(ctx context.Context, c *client, s session, config string, root *o
 			offset = 0
 		}
 		if offset < n || n == 0 {
-			if err := fetchRange(ctx, c, f, item, offset, n); err != nil {
+			if concurrency > 1 && n-offset >= 2*downloadPartSize {
+				err = fetchParallel(ctx, c, f, item, offset, n, concurrency, slots)
+				if errors.Is(err, errBoundedRangesUnavailable) {
+					report("Bounded Range unavailable for %q; falling back to single connection", item.remote)
+					offset, err = f.Seek(0, io.SeekEnd)
+					if err != nil {
+						return err
+					}
+					err = fetchRange(ctx, c, f, item, offset, n, slots)
+				}
+			} else {
+				err = fetchRange(ctx, c, f, item, offset, n, slots)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -232,7 +246,11 @@ func correctRange(header string, start, size int64) bool {
 		match[2] == strconv.FormatInt(size-1, 10) && match[3] == strconv.FormatInt(size, 10)
 }
 
-func fetchRange(ctx context.Context, c *client, f *os.File, item downloadItem, offset, total int64) error {
+func fetchRange(ctx context.Context, c *client, f *os.File, item downloadItem, offset, total int64, slots chan struct{}) error {
+	if err := takeSlot(ctx, slots); err != nil {
+		return err
+	}
+	defer func() { <-slots }()
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ticker := time.AfterFunc(90*time.Second, cancel)
