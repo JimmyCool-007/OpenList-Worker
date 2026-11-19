@@ -453,10 +453,7 @@ var outputMu sync.Mutex
 func report(format string, args ...any) {
 	outputMu.Lock()
 	defer outputMu.Unlock()
-	if activeProgressLine {
-		fmt.Fprint(os.Stderr, "\r\x1b[2K")
-		activeProgressLine = false
-	}
+	eraseProgressLocked()
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
