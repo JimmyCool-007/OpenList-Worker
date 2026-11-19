@@ -90,6 +90,9 @@ func rangeTestClient(t *testing.T, blob []byte, hook func(start, end int64, boun
 }
 
 func TestDownloadPartsPlan(t *testing.T) {
+	if downloadPartSize != 75*mib {
+		t.Fatalf("default download chunk must be 75 MiB, got %d bytes", downloadPartSize)
+	}
 	parts := downloadParts(11, 4*downloadPartSize+22, 4)
 	if len(parts) != 4 || parts[0].start != 11 || parts[0].end != 11+downloadPartSize-1 {
 		t.Fatalf("unexpected first download batch: %+v", parts)
