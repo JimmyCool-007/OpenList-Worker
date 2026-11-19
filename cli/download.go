@@ -135,6 +135,7 @@ func fetchFile(ctx context.Context, c *client, s session, config string, root *o
 		return errors.New("Drive does not expose downloadable file metadata")
 	}
 	var n int64 = *e.Size
+	startedAt := time.Now()
 	unlock, err := lockFile(filepath.Join(config, "downloads"), keyOf(root.Name(), item.local))
 	if err != nil {
 		return err
@@ -223,7 +224,7 @@ func fetchFile(ctx context.Context, c *client, s session, config string, root *o
 	if err := root.Remove(partial); err != nil {
 		return err
 	}
-	report("Downloaded and verified %q (%s)", item.local, byteUnits(n))
+	downloadFinished(item.local, n, time.Since(startedAt))
 	return nil
 }
 
