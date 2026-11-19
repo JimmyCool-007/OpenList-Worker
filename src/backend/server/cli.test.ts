@@ -8,6 +8,7 @@ import type { LedgerStorage } from "../internal/s3/ledger"
 import { setUserPassword } from "../pkg/password"
 import { generateTotpCode, generateTotpSecret } from "../pkg/totp"
 import { cliRouter } from "./cli"
+import { parseCliDownloadRange } from "./cli-drive"
 
 function dbStorage() {
   const sqlite = new DatabaseSync(":memory:")
@@ -110,4 +111,25 @@ test("Worker CLI login, expiry, logout, admin revocation and current permissions
   }, "POST")).status, 200)
   for (let i = 0; i < 8; i++) assert.equal((await login("wrong")).status, 401)
   assert.equal((await login()).status, 429)
+})
+
+test("CLI download Range parser supports bounded chunks and legacy resume", () => {
+  assert.deepEqual(parseCliDownloadRange(null, 4096),
+    { range: null, bounded: false, start: 0, end: 4095 })
+  assert.deepEqual(parseCliDownloadRange("bytes=0-1023", 4096),
+    { range: "bytes=0-1023", bounded: true, start: 0, end: 1023 })
+  assert.deepEqual(parseCliDownloadRange("bytes=1024-4095", 4096),
+    { range: "bytes=1024-4095", bounded: true, start: 1024, end: 4095 })
+  assert.deepEqual(parseCliDownloadRange("bytes=2048-", 4096),
+    { range: "bytes=2048-", bounded: false, start: 2048, end: 4095 })
+  for (const range of [
+    "bytes=0-4096", "bytes=4096-", "bytes=2048-1024",
+    "bytes=0-1,4-5", "bytes=-500", "bytes=00-12",
+    "bytes=1-9999999999999999999999999", "bytes=0-0",
+  ]) {
+    const size = range === "bytes=0-0" ? 0 : 4096
+    assert.throws(() => parseCliDownloadRange(range, size),
+      (error: unknown) => (error as { code?: string; status?: number }).code === "InvalidRange" &&
+        (error as { status?: number }).status === 416, range)
+  }
 })
