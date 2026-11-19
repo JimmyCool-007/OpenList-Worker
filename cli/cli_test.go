@@ -188,6 +188,20 @@ func TestUploadPartSize75MiBAndLegacyResume(t *testing.T) {
 	}
 }
 
+func TestDownloadParallelPartsIsExplicitOptIn(t *testing.T) {
+	o, err := parseOptions("download", []string{"dataset.bin"})
+	if err != nil || o.parallelParts || o.concurrency != 4 {
+		t.Fatalf("default download must be single-stream: %+v %v", o, err)
+	}
+	o, err = parseOptions("download", []string{"dataset.bin", "--parallel-parts", "--concurrency", "4"})
+	if err != nil || !o.parallelParts || o.concurrency != 4 {
+		t.Fatalf("opt-in parallel parts failed: %+v %v", o, err)
+	}
+	if _, err := parseOptions("upload", []string{"dataset.bin", "--parallel-parts"}); err == nil {
+		t.Fatal("download-only flag accepted for upload")
+	}
+}
+
 func TestTransferConcurrencyDefaultAndOverride(t *testing.T) {
 	for _, command := range []string{"upload", "download"} {
 		o, err := parseOptions(command, []string{"file"})
