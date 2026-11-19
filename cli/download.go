@@ -58,7 +58,7 @@ func download(ctx context.Context, c *client, s session, config string, o option
 	initial := downloadItem{remote, filepath.Base(dest), remoteEntry}
 	slots := make(chan struct{}, o.concurrency)
 	if !remoteEntry.IsDir {
-		return downloadFile(ctx, c, s, config, root, initial, slots, o.concurrency)
+		return downloadFile(ctx, c, s, config, root, initial, slots, o)
 	}
 	var files []downloadItem
 	var folders []string
@@ -90,7 +90,7 @@ func download(ctx context.Context, c *client, s session, config string, o option
 		}
 	}
 	return parallel(ctx, o.concurrency, files, func(ctx context.Context, item downloadItem) error {
-		return downloadFile(ctx, c, s, config, sub, item, slots, o.concurrency)
+		return downloadFile(ctx, c, s, config, sub, item, slots, o)
 	})
 }
 
@@ -122,14 +122,14 @@ func downloadTree(ctx context.Context, c *client, dir downloadItem, files *[]dow
 	return nil
 }
 
-func downloadFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem, slots chan struct{}, concurrency int) error {
-	if err := fetchFile(ctx, c, s, config, root, item, slots, concurrency); err != nil {
+func downloadFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem, slots chan struct{}, o options) error {
+	if err := fetchFile(ctx, c, s, config, root, item, slots, o); err != nil {
 		return fmt.Errorf("download %q: %w", item.remote, err)
 	}
 	return nil
 }
 
-func fetchFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem, slots chan struct{}, concurrency int) error {
+func fetchFile(ctx context.Context, c *client, s session, config string, root *os.Root, item downloadItem, slots chan struct{}, o options) error {
 	e := item.entry
 	if e.Size == nil || *e.Size < 0 || e.Version == "" {
 		return errors.New("Drive does not expose downloadable file metadata")
@@ -182,9 +182,12 @@ func fetchFile(ctx context.Context, c *client, s session, config string, root *o
 			}
 			offset = 0
 		}
+		// A single file uses one continuous HTTP stream by default. Only
+		// --parallel-parts explicitly enables bounded Range chunks.
+		// The shared semaphore still caps simultaneous folder downloads.
 		if offset < n || n == 0 {
-			if concurrency > 1 && n-offset >= 2*downloadPartSize {
-				err = fetchParallel(ctx, c, f, item, offset, n, concurrency, slots)
+			if o.parallelParts && o.concurrency > 1 && n-offset >= 2*downloadPartSize {
+				err = fetchParallel(ctx, c, f, item, offset, n, o.concurrency, slots)
 				if errors.Is(err, errBoundedRangesUnavailable) {
 					report("Bounded Range unavailable for %q; falling back to single connection", item.remote)
 					offset, err = f.Seek(0, io.SeekEnd)

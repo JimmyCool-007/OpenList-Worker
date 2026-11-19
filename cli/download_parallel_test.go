@@ -89,6 +89,37 @@ func rangeTestClient(t *testing.T, blob []byte, hook func(start, end int64, boun
 	return c, e
 }
 
+// The default four-way concurrency applies to independent files, not parts
+// of one large file, unless the user explicitly requests parallel parts.
+func TestDownloadDefaultsToOneStreamPerFile(t *testing.T) {
+	blob := rangeTestBlob(int(2*downloadPartSize + 1024))
+	var bounded, single atomic.Int32
+	c, e := rangeTestClient(t, blob, func(start, end int64, isBounded bool) int {
+		if isBounded {
+			bounded.Add(1)
+			return http.StatusBadRequest
+		}
+		single.Add(1)
+		return 0
+	})
+	opts, err := parseOptions("download", []string{e.Name, "--concurrency", "4"})
+	if err != nil || opts.parallelParts || opts.concurrency != 4 {
+		t.Fatalf("default must use one stream per file: %+v %v", opts, err)
+	}
+	target := t.TempDir()
+	opts.to = target
+	if err := download(t.Context(), c, session{UserID: 7}, t.TempDir(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if bounded.Load() != 0 || single.Load() != 1 {
+		t.Fatalf("unexpected requests: bounded=%d single=%d", bounded.Load(), single.Load())
+	}
+	actual, err := os.ReadFile(filepath.Join(target, e.Name))
+	if err != nil || !bytes.Equal(actual, blob) {
+		t.Fatalf("single-stream file differs: %v", err)
+	}
+}
+
 func TestDownloadPartsPlan(t *testing.T) {
 	if downloadPartSize != 75*mib {
 		t.Fatalf("default download chunk must be 75 MiB, got %d bytes", downloadPartSize)
@@ -130,7 +161,7 @@ func TestParallelDownloadSingleFileUsesFourStreams(t *testing.T) {
 	})
 	dir := t.TempDir()
 	if err := download(t.Context(), c, session{UserID: 7}, t.TempDir(),
-		options{arg: e.Name, to: dir, concurrency: 4}); err != nil {
+		options{arg: e.Name, to: dir, concurrency: 4, parallelParts: true}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, e.Name))
@@ -156,7 +187,7 @@ func TestParallelDownloadFallsBackWhenRangesUnsupported(t *testing.T) {
 	})
 	dir := t.TempDir()
 	if err := download(t.Context(), c, session{UserID: 7}, t.TempDir(),
-		options{arg: e.Name, to: dir, concurrency: 4}); err != nil {
+		options{arg: e.Name, to: dir, concurrency: 4, parallelParts: true}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, e.Name))
@@ -186,7 +217,7 @@ func TestParallelDownloadResumeKeepsContiguousPrefix(t *testing.T) {
 		return 0
 	})
 	dir, cfg := t.TempDir(), t.TempDir()
-	opts := options{arg: e.Name, to: dir, concurrency: 4}
+	opts := options{arg: e.Name, to: dir, concurrency: 4, parallelParts: true}
 	if err := download(t.Context(), c, session{UserID: 7}, cfg, opts); err == nil {
 		t.Fatal("failed batch was incorrectly published")
 	}
