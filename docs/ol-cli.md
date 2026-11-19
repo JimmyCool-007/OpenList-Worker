@@ -12,7 +12,7 @@ ol version
 
 `/i` 和 `/install.sh` 由 Worker 直接返回同一份 Bash 脚本，不重定向到 GitHub。脚本只从 `https://drive.jimmy007.com/cli-releases/` 获取最新版本、对应架构二进制和 SHA256SUMS，校验 SHA-256 后才安装。支持 Linux x86_64/AMD64 和 aarch64/ARM64。需要 Bash、curl、sha256sum 和常见系统工具。
 
-安装会将 PATH 行写入 `~/.bashrc` 和 `~/.zshrc`，重复运行不会重复添加。当前终端不会因子进程自动修改 PATH，可执行上面的 `export` 或重新打开终端。再次运行安装命令可安全更新；若已有文件不是此安装器管理的文件，脚本会停止并要求手动处理。可用 `OL_VERSION=0.1.8 bash install-cli.sh` 安装指定已发布版本。
+安装会将 PATH 行写入 `~/.bashrc` 和 `~/.zshrc`，重复运行不会重复添加。当前终端不会因子进程自动修改 PATH，可执行上面的 `export` 或重新打开终端。再次运行安装命令可安全更新；若已有文件不是此安装器管理的文件，脚本会停止并要求手动处理。可用 `OL_VERSION=0.1.9 bash install-cli.sh` 安装指定已发布版本。
 
 GitHub Releases 仍保留相同的 Linux 二进制和 SHA256SUMS 作为备用渠道：当自有域名不可用时，可手动从对应 Release 下载所需架构并验证 SHA256SUMS。默认脚本不访问 GitHub。
 
@@ -47,7 +47,7 @@ R2 上传完成后，由 Worker Queue 继续转存，即使 SSH 关闭也会继�
 
 ## 传输进度显示
 
-在 SSH 交互终端中，`ol upload` 和 `ol download` 会使用原地刷新的单行进度条，显示百分比、当前字节数、传输速度和预计剩余时间。R2 分片上传与 Google Drive 后台转存分别显示独立进度；Google Drive 进度以 Worker 实际报告的已转存字节数为准，并非 R2 上传进度的延续。
+在 SSH 交互终端中，`ol download` 使用**黑白两行内容的简洁边框表格**：第一行显示下载文件名及大小，第二行显示进度条、百分比、速度和 ETA；刷新时原地重绘，不重复刷屏，文件完整性校验成功后原位置显示完成状态、耗时和平均速度。终端宽度不足 32 列时自动退回原有单行显示。`ol upload` 保持原有单行进度条，显示百分比、当前字节数、速度及预计剩余时间。R2 分片上传与 Google Drive 后台转存分别显示独立进度；Google Drive 进度以 Worker 实际报告的已转存字节数为准，并非 R2 上传进度的延续。
 
 Multipart 最终提交、等待后台队列及 R2 清理等阶段无法可靠计算百分比，因此显示动态等待指示而不虚构百分比。只有 Google Drive 验证成功且 R2 清理完成，才会报告任务成功。
 
