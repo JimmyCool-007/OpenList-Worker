@@ -27,6 +27,10 @@ func progressLine(line string, finish bool) {
 	outputMu.Lock()
 	defer outputMu.Unlock()
 	if interactiveProgress {
+		// A one-line status can follow a download box only after erasing it.
+		if activeBoxLines != 0 {
+			eraseProgressLocked()
+		}
 		line = fitTerminalLine(line, terminalColumns())
 		fmt.Fprint(os.Stderr, "\r\x1b[2K", line)
 		if finish {
@@ -45,10 +49,7 @@ func progressLine(line string, finish bool) {
 func clearProgressLine() {
 	outputMu.Lock()
 	defer outputMu.Unlock()
-	if activeProgressLine {
-		fmt.Fprint(os.Stderr, "\r\x1b[2K")
-		activeProgressLine = false
-	}
+	eraseProgressLocked()
 }
 
 // The finalizing and cleanup stages have no measurable percentage. Animate
@@ -220,7 +221,11 @@ func (p *progress) renderLocked(force bool) {
 		return
 	}
 	p.last = now
-	progressLine(p.format(now), force)
+	if interactiveProgress && strings.HasPrefix(p.label, "Download ") && terminalColumns() >= downloadBoxMinColumns {
+		p.drawBox(now)
+	} else {
+		progressLine(p.format(now), force)
+	}
 }
 
 func (p *progress) format(now time.Time) string {
